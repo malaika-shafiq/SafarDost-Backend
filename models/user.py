@@ -11,7 +11,14 @@ class Users(Base):
     email = Column(String, unique=True, index=True)
     hashed_password = Column(String)
     current_refresh_token = Column(String, nullable=True)
-    role = Column(String, default="traveler")  # Track authority levels: "admin" or "traveler"
+    role = Column(String, default="traveler")  # "admin" or "traveler"
+
+    # New Columns (Non-mandatory / Nullable)
+    phone_number = Column(String, nullable=True)
+    cnic_number = Column(String, nullable=True)
+
+    # Soft Delete Flag (By default "y" for active, change to "n" for soft-deleted)
+    status = Column(String, default="y", server_default="y")
 
     # Relational links: Connects a user to their generated application resources
     reviews = relationship("Reviews", back_populates="user")

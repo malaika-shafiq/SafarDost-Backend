@@ -1,6 +1,7 @@
 from fastapi import FastAPI
 from database import engine, Base
 # 1. Direct specific imports from the main routers root folder
+from routers.admin import router as admin_router
 from routers.auth import router as auth_router
 from routers.places import router as places_router
 from routers.hotels import router as hotels_router
@@ -38,6 +39,7 @@ Base.metadata.create_all(bind=engine)
 def first_api():
     return {"Hello": "World"}
 
+app.include_router(admin_router)
 app.include_router(auth_router)
 app.include_router(places_router)
 app.include_router(hotels_router)

@@ -30,8 +30,8 @@ def hash_password(password: str):
 
 
 def authenticate_traveler(email: str, password: str, db: Session):
-    """Checks credentials against user database table fields."""
-    user = db.query(Users).filter(Users.email == email).first()
+    # Only pull users whose status is active ('y')
+    user = db.query(Users).filter(Users.email == email, Users.status == "y").first()
 
     if not user:
         return None
@@ -40,6 +40,7 @@ def authenticate_traveler(email: str, password: str, db: Session):
         return None
 
     return user
+
 
 
 def generate_access_token(email: str, user_id: int, role: str, expires_delta: timedelta):

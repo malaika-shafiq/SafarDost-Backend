@@ -66,8 +66,9 @@ def register_user(user_request: auth_schemas.UserCreate, db: db_dependency):
 @router.post("/login", response_model=auth_schemas.TokenResponse, status_code=status.HTTP_200_OK)
 def login_user(login_request: auth_schemas.UserLogin, db: db_dependency):
     """
-    Authenticates a traveler and returns both an access and refresh token.
+    Authenticates a traveler and returns tokens along with their profile data.
     """
+    # authenticate_traveler already filters out soft-deleted (status="n") accounts!
     user = authenticate_traveler(login_request.email, login_request.password, db)
 
     if not user:
@@ -76,15 +77,13 @@ def login_user(login_request: auth_schemas.UserLogin, db: db_dependency):
             detail="Invalid email or password."
         )
 
-    # Generate a 15-minute short access token containing the role mapping
     access_token = generate_access_token(
         email=user.email,
         user_id=user.id,
-        role=getattr(user, "role", "traveler"),  # Safe dynamic attribute access fallback
+        role=getattr(user, "role", "traveler"),
         expires_delta=timedelta(minutes=15)
     )
 
-    # Generate a 30-day long refresh token
     refresh_token = generate_refresh_token(
         email=user.email,
         user_id=user.id,
@@ -94,12 +93,16 @@ def login_user(login_request: auth_schemas.UserLogin, db: db_dependency):
     user.current_refresh_token = refresh_token
     db.add(user)
     db.commit()
+    db.refresh(user) # Refresh to ensure we have the latest database state
 
+    # UPDATED RESPONSE: Includes the database user object
     return {
         "access_token": access_token,
         "refresh_token": refresh_token,
-        "token_type": "bearer"
+        "token_type": "bearer",
+        "user": user  # FastAPI will automatically format this using UserResponse schema
     }
+
 
 @router.post("/login/swagger", include_in_schema=True)
 def login_user_for_swagger(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
@@ -259,21 +262,23 @@ def get_current_user_profile(current_user: user_dependency, db: db_dependency):
 @router.delete("/account", status_code=status.HTTP_200_OK)
 def delete_user_account(current_user: user_dependency, db: db_dependency):
     """
-    Permanently deletes a traveler's account and profile data from TravelMate Pakistan.
+    Soft deletes a traveler's account by flipping their status to 'n'.
     """
-    # 1. Fetch the user profile by tracking the secure ID in the JWT session token
+    # Fetch the user profile
     user = db.query(Users).filter(Users.id == current_user.get("id")).first()
 
-    # 2. Defensive Guard Clause: Verify the account exists before executing deletion
-    if not user:
+    # Verify the account exists and is not already soft-deleted
+    if not user or user.status == "n":
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Account not found or already deleted."
         )
 
-    # 3. Remove the target record row from the SQLite engine cache
-    db.delete(user)
+    # ---- SOFT DELETE LOGIC ----
+    user.status = "n"  # Turn the active switch off
+    user.current_refresh_token = None  # Instantly invalidate their active refresh session
+
+    db.add(user)
     db.commit()
 
-    # 4. Return a clean confirmation dictionary to alert the mobile app to purge local device data
-    return {"message": "Your traveler account has been permanently deleted successfully."}
+    return {"message": "Your traveler account has been deactivated and soft-deleted successfully."}

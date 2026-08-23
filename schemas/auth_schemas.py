@@ -1,22 +1,22 @@
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, ConfigDict, EmailStr, Field
 from typing import Optional
-
 
 class UserCreate(BaseModel):
     name: str
-    email: EmailStr  # Automatically validates proper formats (e.g; user@email.com)
-    password: str    # Plain text password from frontend
-    role: Optional[str] = "traveler"  # Options: "admin", "traveler"
-
+    email: EmailStr
+    password: str
+    phone_number: Optional[str] = None  # Optional field
+    cnic_number: Optional[str] = None   # Optional field
 
 class UserResponse(BaseModel):
     id: int
     name: str
     email: EmailStr
-    role: str
+    phone_number: Optional[str]
+    cnic_number: Optional[str]
+    status: str
 
-    class Config:
-        from_attributes = True  # Allows Pydantic to read classic SQLAlchemy columns easily
+    model_config = ConfigDict(from_attributes=True)
 
 
 class UserLogin(BaseModel):
@@ -26,8 +26,9 @@ class UserLogin(BaseModel):
 
 class TokenResponse(BaseModel):
     access_token: str
-    refresh_token: str  # Add this to pass the long-lived key to the mobile app
+    refresh_token: str
     token_type: str = "bearer"
+    user: UserResponse  # This will now return the full logged-in user profile
 
 
 class TokenRefreshRequest(BaseModel):
