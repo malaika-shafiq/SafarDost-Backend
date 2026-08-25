@@ -22,3 +22,9 @@ class Hotels(Base):
 
     # Add this line at the bottom of your Hotels class
     bookings = relationship("HotelBookings", back_populates="hotel")
+
+    # 🪝 Foreign Key Constraint Link
+    category_id = Column(Integer, ForeignKey("categories.id"), nullable=False)
+
+    # 🔗 Relationship mapping to fetch parent category details
+    category = relationship("Categories", back_populates="hotels")

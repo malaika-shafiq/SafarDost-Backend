@@ -9,7 +9,6 @@ class Places(Base):
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String, index=True)
     location = Column(String)
-    category = Column(String)     # e.g., "Lake", "Fort", "Valley"
     description = Column(Text)
     image = Column(String)
     # Add the physical integer column to hold the owner's ID
@@ -21,3 +20,9 @@ class Places(Base):
 
     # 3. Add the explicit relationship property that SQLAlchemy is looking for
     creator = relationship("Users", back_populates="created_places")
+
+    # 🪝 Foreign Key Constraint Link
+    category_id = Column(Integer, ForeignKey("categories.id"), nullable=False)
+
+    # 🔗 Relationship mapping to fetch parent category details
+    category = relationship("Categories", back_populates="places")

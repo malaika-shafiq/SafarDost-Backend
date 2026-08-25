@@ -1,5 +1,5 @@
 from database import Base
-from sqlalchemy import Column, Integer, String, Float
+from sqlalchemy import Column, Integer, String, Float, ForeignKey
 from sqlalchemy.orm import relationship
 
 
@@ -17,3 +17,9 @@ class Restaurants(Base):
     reviews = relationship("Reviews", back_populates="restaurant")
 
     bookings = relationship("RestaurantBookings", back_populates="restaurant")
+
+    # 🪝 Foreign Key Constraint Link
+    category_id = Column(Integer, ForeignKey("categories.id"), nullable=False)
+
+    # 🔗 Relationship mapping to fetch parent category details
+    category = relationship("Categories", back_populates="restaurants")
