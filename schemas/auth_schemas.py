@@ -5,6 +5,7 @@ class UserCreate(BaseModel):
     name: str
     email: EmailStr
     password: str
+    role: Optional[str] = "traveler"
     phone_number: Optional[str] = None  # Optional field
     cnic_number: Optional[str] = None   # Optional field
 
@@ -12,6 +13,7 @@ class UserResponse(BaseModel):
     id: int
     name: str
     email: EmailStr
+    role: str
     phone_number: Optional[str]
     cnic_number: Optional[str]
     status: str
