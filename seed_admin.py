@@ -2,14 +2,15 @@ import os
 from sqlalchemy.orm import sessionmaker
 from database import engine
 
-# 1. Force all relational models into memory to fix the SQLAlchemy mapping crash
-from models.user import Users  # Matches your 'class Users(Base)'
+# 1. Force all relational models into memory to fix mapping setups
+from models.user import Users, UserStatusEnum
 from models.category import Categories
-from models.hotel import Hotels
+#from models.hotel import Hotels
 from models.place import Places
-from models.restaurant import Restaurants
+#from models.restaurant import Restaurants
+from models.location import Locations  # 👈 Add this line!
 
-# Import your actual password hashing utility from your utils script
+# Import your password hashing utility from your utils script
 from utils.auth_utils import hash_password
 
 # Set up the session factory linking directly to your database engine
@@ -28,21 +29,20 @@ def seed_admin_user():
             return
 
         # Hash your admin password using your utility function
-        # Replace 'SecureAdminPass123!' with your desired presentation password
         hashed_pass = hash_password("SecureAdminPass123!")
 
-        # Create the instance according to your exact model columns
+        # Create the instance according to your exact modern model columns
         new_admin = Users(
             name="Administrator",
             email=admin_email,
             hashed_password=hashed_pass,
-            role="admin",  # Matches your 'admin' or 'traveler' constraint flag
-            status="y"  # Matches your soft delete flag default layout
+            role="admin",
+            status=UserStatusEnum.active.value  # 👈 FIXED: Swapped out the object mapping for the raw value string string!
         )
 
         db.add(new_admin)
         db.commit()
-        print(f"[+] Success! Admin user '{admin_email}' has been seeded safely into PostgreSQL.")
+        print(f"[+] Success! Admin user '{admin_email}' has been seeded safely into the database.")
 
     except Exception as e:
         print(f"[!] Seeding failed: {str(e)}")

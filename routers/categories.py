@@ -2,9 +2,9 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from database import get_db
-from models.category import Categories
+from models.category import Categories, CategoryStatusEnum
 from schemas.category_schemas import CategoryCreate, CategoryResponse
-from utils.auth_utils import get_current_admin  # 🔒 Security Gate Dependency
+from utils.auth_utils import get_current_admin
 
 router = APIRouter(prefix="/categories", tags=["Categories Management"])
 
@@ -12,21 +12,14 @@ db_dependency = Annotated[Session, Depends(get_db)]
 admin_dependency = Annotated[dict, Depends(get_current_admin)]
 
 
-# ==========================================
-# 1. READ ALL ACTIVE CATEGORIES (Public / Traveler Mobile App Access)
-# ==========================================
 @router.get("", response_model=list[CategoryResponse], status_code=status.HTTP_200_OK)
 def get_all_active_categories(db: db_dependency):
     """
-    Fetches all active taxonomy records from safardost.db.
-    Automatically filters out soft-deleted ('n') records so they vanish from the mobile layout.
+    PUBLIC ACCESSIBLE: Fetches all active taxonomy records.
     """
-    return db.query(Categories).filter(Categories.status == "y").all()
+    return db.query(Categories).filter(Categories.status == CategoryStatusEnum.active).all()
 
 
-# ==========================================
-# 2. CREATE A CATEGORY (🔒 Admin Account Gate Only)
-# ==========================================
 @router.post("", response_model=CategoryResponse, status_code=status.HTTP_201_CREATED)
 def create_new_category(
         category_request: CategoryCreate,
@@ -34,21 +27,20 @@ def create_new_category(
         db: db_dependency
 ):
     """
-    ADMIN ONLY: Inserts a new category into the lookup cluster.
-    Prevents naming duplicates to maintain clean data hygiene across Pakistan points.
+    ADMIN ONLY: Inserts a new category and maps the executing admin's ID as creator_id.
     """
-    # Defensive Check: Prevent duplicate naming entries
     clean_name = category_request.name.strip()
     existing_category = db.query(Categories).filter(Categories.name == clean_name).first()
     if existing_category:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"A category named '{clean_name}' already exists in the system layout."
+            detail=f"A category named '{clean_name}' already exists."
         )
 
     db_category = Categories(
         name=clean_name,
-        description=category_request.description
+        description=category_request.description,
+        creator_id=current_admin.get("id")  # 🏛️ Accountability mapping
     )
 
     db.add(db_category)
@@ -57,9 +49,6 @@ def create_new_category(
     return db_category
 
 
-# ==========================================
-# 3. UPDATE AN EXISTING CATEGORY (🔒 Admin Account Gate Only)
-# ==========================================
 @router.put("/{category_id}", response_model=CategoryResponse, status_code=status.HTTP_200_OK)
 def update_existing_category(
         category_id: int,
@@ -68,8 +57,7 @@ def update_existing_category(
         db: db_dependency
 ):
     """
-    ADMIN ONLY: Modifies structural configuration labels.
-    Triggers the SQLAlchemy onupdate lifecycle to recalibrate the updated_at column stamp.
+    ADMIN ONLY: Modifies existing category parameters and tracks the modifier admin.
     """
     category = db.query(Categories).filter(Categories.id == category_id).first()
     if not category:
@@ -78,9 +66,11 @@ def update_existing_category(
             detail="Target category profile does not exist."
         )
 
-    # Apply fresh value assignments
     category.name = category_request.name.strip()
     category.description = category_request.description
+
+    # 🏛️ Actively uses current_admin to clear the PyCharm highlight warning
+    category.updated_by = current_admin.get("id")
 
     db.add(category)
     db.commit()
@@ -88,9 +78,6 @@ def update_existing_category(
     return category
 
 
-# ==========================================
-# 4. SOFT-DELETE CATEGORY (🔒 Admin Account Gate Only)
-# ==========================================
 @router.delete("/{category_id}", status_code=status.HTTP_200_OK)
 def soft_delete_category(
         category_id: int,
@@ -98,19 +85,20 @@ def soft_delete_category(
         db: db_dependency
 ):
     """
-    ADMIN ONLY: Deactivates category tracking blocks by flipping the status switch to 'n'.
-    Guards active historic constraints without corrupting connected relational dependency chains.
+    ADMIN ONLY: Soft-deletes a category safely and records the executing admin's ID.
     """
     category = db.query(Categories).filter(Categories.id == category_id).first()
-    if not category or category.status == "n":
+
+    if not category or category.status == CategoryStatusEnum.inactive:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Category record not found or already deactivated."
         )
 
-    # Execute the requested soft-delete configuration flag
-    category.status = "n"
+    # 🏛️ Apply soft-delete switch values using active execution variables
+    category.status = CategoryStatusEnum.inactive
+    category.updated_by = current_admin.get("id")  # 👈 Clears PyCharm warning flag
 
     db.add(category)
     db.commit()
-    return {"message": f"Category '{category.name}' has been safely soft-deleted and hidden from mobile views."}
+    return {"message": f"Category '{category.name}' has been safely soft-deleted."}

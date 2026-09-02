@@ -8,3 +8,6 @@ from .place import Places
 from .review import Reviews
 from .booking import HotelBookings, RestaurantBookings, TransportBookings
 from .store import GearItem, GearOrder
+from .category import Categories
+from .location import Locations
+from .image import Images

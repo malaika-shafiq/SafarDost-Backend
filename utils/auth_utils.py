@@ -7,31 +7,38 @@ from passlib.context import CryptContext
 from jose import jwt, JWTError
 from pydantic import EmailStr
 from sqlalchemy.orm import Session
-from models.user import Users
+from models.user import Users, UserStatusEnum  # 👈 Imported your Enum here
 from dotenv import load_dotenv
 
-# 1. Load the hidden .env file variables into memory
+# Load environment variables
 load_dotenv()
 
-# 2. Pull the variables securely using os.environ
 SECRET_KEY = os.environ.get("SAFARDOST_SECRET_KEY")
+if not SECRET_KEY:
+    raise RuntimeError("CRITICAL ERROR: SAFARDOST_SECRET_KEY environment variable is not set!")
 ALGORITHM = os.environ.get("ALGORITHM", "HS256")
 
-# This looks for the "Authorization: Bearer <token>" header automatically
-#oauth2_bearer = OAuth2PasswordBearer(tokenUrl="auth/login")
+# OAuth2 setup for Swagger docs
 oauth2_bearer = OAuth2PasswordBearer(tokenUrl="auth/login/swagger")
 
 bcrypt_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 
 def hash_password(password: str):
-    """Transforms plain text into a secure hash using colons only."""
+    """Transforms plain text into a secure hash."""
     return bcrypt_context.hash(password)
 
 
 def authenticate_traveler(email: str, password: str, db: Session):
-    # Only pull users whose status is active ('y')
-    user = db.query(Users).filter(Users.email == email, Users.status == "y").first()
+    """
+    Looks up a user record and matches hashes.
+    Filters exclusively for active enum values instead of old strings.
+    """
+    # 👈 FIX: Filter updated from status == "y" to status == UserStatusEnum.active
+    user = db.query(Users).filter(
+        Users.email == email,
+        Users.status == UserStatusEnum.active
+    ).first()
 
     if not user:
         return None
@@ -42,54 +49,47 @@ def authenticate_traveler(email: str, password: str, db: Session):
     return user
 
 
-
 def generate_access_token(email: str, user_id: int, role: str, expires_delta: timedelta):
     """Signs a short-lived access token containing role scopes."""
     token_expiry = datetime.now(timezone.utc) + expires_delta
     token_claims = {
         "sub": email,
         "id": user_id,
-        "role": role,       # Baked straight into claims data
-        "type": "access",   # Helps distinguish token usage
+        "role": role,
+        "type": "access",
         "exp": token_expiry
     }
     return jwt.encode(token_claims, SECRET_KEY, algorithm=ALGORITHM)
 
 
 def generate_refresh_token(email: EmailStr, user_id: int, expires_delta: timedelta):
-    """Signs a long-lived refresh token (typically 7 days)."""
+    """Signs a long-lived refresh token."""
     token_expiry = datetime.now(timezone.utc) + expires_delta
     token_claims = {
         "sub": email,
         "id": user_id,
-        "type": "refresh",  # Prevents users from using this as an access token
+        "type": "refresh",
         "exp": token_expiry
     }
     return jwt.encode(token_claims, SECRET_KEY, algorithm=ALGORITHM)
 
 
 def get_current_user(token: Annotated[str, Depends(oauth2_bearer)]):
-    """
-    Decodes the incoming mobile JWT token synchronously.
-    Returns user dictionary context details if valid.
-    """
+    """Decodes the incoming mobile JWT token synchronously."""
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Could not validate credentials."
     )
     try:
-        # Decode the token using secret application key
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
 
         email: EmailStr = payload.get("sub")
         user_id: int = payload.get("id")
         role: str = payload.get("role")
 
-        # Guard clause: ensure vital information exists inside the token
         if email is None or user_id is None or role is None:
             raise credentials_exception
 
-        # Return a dictionary containing the authenticated user's identification details
         return {"email": email, "id": user_id, "role": role}
 
     except JWTError:
@@ -97,9 +97,7 @@ def get_current_user(token: Annotated[str, Depends(oauth2_bearer)]):
 
 
 def get_current_admin(current_user: Annotated[dict, Depends(get_current_user)]):
-    """
-    Dependency gate blocking non-admin user tokens from restricted mutations.
-    """
+    """Dependency gate blocking non-admin user tokens."""
     if current_user.get("role") != "admin":
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,

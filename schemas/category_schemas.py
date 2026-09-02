@@ -1,6 +1,8 @@
 from pydantic import BaseModel, ConfigDict, Field
 from datetime import datetime
 from typing import Optional
+# 👈 Import your explicit category enum from the model file here
+from models.category import CategoryStatusEnum
 
 class CategoryCreate(BaseModel):
     """ Validates the data incoming from the frontend or admin panel. """
@@ -14,6 +16,8 @@ class CategoryResponse(BaseModel):
     description: Optional[str]
     created_at: datetime
     updated_at: datetime
-    status: str
+    status: CategoryStatusEnum  # 👈 CHANGED: Swapped out 'str' for 'CategoryStatusEnum'
+    creator_id: int  # 👈 Added to track who built this category record
+    updated_by: Optional[int] = None
 
     model_config = ConfigDict(from_attributes=True)
