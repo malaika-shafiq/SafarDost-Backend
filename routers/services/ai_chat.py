@@ -49,8 +49,10 @@ def converse_with_travel_assistant(payload: AIChatRequest, current_user: user_de
             detail="User message query parameter text cannot be empty."
         )
 
-    # Official Gemini 1.5 Flash content generation path
-    ENDPOINT_URL = f"https://googleapis.com{GEMINI_API_KEY}"
+    # Clean URL construction using a parameter mapping dictionary to protect the domain path
+    BASE_URL = "https://googleapis.com"
+    query_params = {"key": GEMINI_API_KEY}
+    ENDPOINT_URL = f"{BASE_URL}?{urllib.parse.urlencode(query_params)}"
 
     # SYSTEM GUARDRAIL: Grounding prompt rules
     system_instruction = (
@@ -85,7 +87,7 @@ def converse_with_travel_assistant(payload: AIChatRequest, current_user: user_de
             raw_response = response.read().decode("utf-8")
             response_json = json.loads(raw_response)
 
-            # FIXED: Added the required list index offsets to unpack nested arrays safely
+            # Extract out response tokens safely
             ai_reply_text = response_json["candidates"][0]["content"]["parts"][0]["text"].strip()
 
             return AIChatResponse(
@@ -101,9 +103,13 @@ def converse_with_travel_assistant(payload: AIChatRequest, current_user: user_de
             detail=f"Gemini Upstream Platform rejected call parameters (Status {http_ex.code}): {error_content[:150]}"
         )
     except Exception as e:
-        # Re-raise the raw exception temporarily during debugging so we can pinpoint the blocker in Swagger
-        logger.error(f"Live Gemini request pipeline execution failure: {str(e)}")
+        masked_key = f"{GEMINI_API_KEY[:4]}... (Length: {len(GEMINI_API_KEY)})" if GEMINI_API_KEY else "Empty"
+        logger.error(f"Live Gemini connection pipeline failure: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"Live AI backend connection error: {str(e)}"
+            detail=(
+                f"Live AI backend connection error: {str(e)}. "
+                f"Verify your GOOGLE_GEMINI_KEY variable values in Railway settings. "
+                f"Server is currently parsing key as: {masked_key}"
+            )
         )
