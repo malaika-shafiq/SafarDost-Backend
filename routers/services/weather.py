@@ -82,10 +82,19 @@ def get_weather(city: str, force_refresh: bool = False, db: Session = Depends(ge
         )
 
     # 4. Pull out individual pieces from official OpenWeather response structure
-    extracted_city = weather_data["name"]
-    extracted_temp = float(weather_data["main"]["temp"])
-    extracted_condition = weather_data["weather"][0]["description"]  # OpenWeather nests array objects here
-    extracted_humidity = int(weather_data["main"]["humidity"])
+    try:
+        extracted_city = weather_data["name"]
+        extracted_temp = float(weather_data["main"]["temp"])
+
+        # FIXED: Added [0] index accessor because OpenWeather returns "weather" as a list block
+        extracted_condition = weather_data["weather"][0]["description"]
+
+        extracted_humidity = int(weather_data["main"]["humidity"])
+    except (KeyError, IndexError, TypeError) as parse_err:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Failed to process upstream format schema parameters: {str(parse_err)}"
+        )
 
     # 5. Save fresh data using up-to-date time strategy
     current_utc_now = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
