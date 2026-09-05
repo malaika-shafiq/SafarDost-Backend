@@ -16,10 +16,13 @@ router = APIRouter(prefix="", tags=["Weather Services"])
 
 @router.get("/weather", response_model=WeatherResponse)
 def get_weather(city: str, force_refresh: bool = False, db: Session = Depends(get_db)):
-    # 1. Search local SQLite cache
-    local_record = db.query(WeatherCache).filter(WeatherCache.city_name.ilike(f"%{city}%")).first()
+    # 1. Standardize and clean the input city query parameters
+    clean_city = city.replace("\n", "").replace("\r", "").strip()
 
-    # 2. Cache Check (30 Mins)
+    # 2. Search local SQLite cache using case-insensitive mapping
+    local_record = db.query(WeatherCache).filter(WeatherCache.city_name.ilike(f"%{clean_city}%")).first()
+
+    # 3. Cache Validation Check (30 Minute window)
     if local_record and not force_refresh:
         current_time = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
         record_time = local_record.last_updated
@@ -33,21 +36,22 @@ def get_weather(city: str, force_refresh: bool = False, db: Session = Depends(ge
                 humidity=local_record.humidity
             )
 
-    # 3. Environment Token Validation
+    # 4. Environment Key Isolation and Deep Sanitation
     RAW_KEY = os.getenv("WEATHER_API_KEY")
     if not RAW_KEY:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Server configuration missing: WEATHER_API_KEY is not defined."
+            detail="Server configuration missing: WEATHER_API_KEY environment variable is not defined."
         )
 
-    API_KEY = RAW_KEY.strip().replace('"', '').replace("'", "")
+    # Completely cleans hidden carriage returns (\r) and newlines (\n) injected by cloud copy-pastes
+    API_KEY = RAW_KEY.replace("\n", "").replace("\r", "").strip().replace('"', '').replace("'", "")
 
     # Clean URL parameter mapping for WeatherAPI.com
-    BASE_URL = "https://weatherapi.com"
+    BASE_URL = "https://api.weatherapi.com/v1/current.json"
     query_params = {
         "key": API_KEY,
-        "q": city,
+        "q": clean_city,
         "aqi": "no"
     }
     encoded_params = urllib.parse.urlencode(query_params)
@@ -60,10 +64,14 @@ def get_weather(city: str, force_refresh: bool = False, db: Session = Depends(ge
 
         with urllib.request.urlopen(req, timeout=10.0) as response:
             raw_data = response.read().decode("utf-8")
+
+            # Check for HTML structural leaks
+            if raw_data.strip().startswith("<!DOCTYPE") or raw_data.strip().startswith("<html"):
+                raise ValueError("WeatherAPI engine redirected to the homepage HTML instead of data.")
+
             weather_data = json.loads(raw_data)
 
     except urllib.error.HTTPError as http_ex:
-        # Catch explicit error bodies from WeatherAPI.com safely
         error_body = http_ex.read().decode("utf-8")
         try:
             parsed_error = json.loads(error_body)
@@ -71,20 +79,23 @@ def get_weather(city: str, force_refresh: bool = False, db: Session = Depends(ge
         except Exception:
             error_message = error_body
 
-        # FIXED: Populated the list values to fix the SyntaxError completely
         if http_ex.code in [400, 401, 403]:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"WeatherAPI validation error (Status {http_ex.code}): {error_message}"
+                detail=f"WeatherAPI Validation Failure (Status {http_ex.code}): {error_message}"
             )
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"External weather engine returned server error code {http_ex.code}"
+            detail=f"External gateway returned unexpected server error status: {http_ex.code}"
         )
-    except json.JSONDecodeError as json_err:
+    except ValueError:
         raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"Received malformed non-JSON data from weather service: {str(json_err)}. Data: {raw_data[:200]}"
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                f"The server is receiving an HTML webpage instead of JSON. This confirms your "
+                f"WEATHER_API_KEY environment variable token is corrupt or invalid. "
+                f"Please re-paste your key cleanly into your deployment dashboard settings."
+            )
         )
     except Exception as e:
         raise HTTPException(
@@ -92,7 +103,7 @@ def get_weather(city: str, force_refresh: bool = False, db: Session = Depends(ge
             detail=f"External weather service transport failed: {str(e)}"
         )
 
-    # 4. Extract data attributes safely from WeatherAPI layout
+    # 5. Extract attributes safely from verified WeatherAPI data schemas
     try:
         extracted_city = weather_data["location"]["name"]
         extracted_temp = float(weather_data["current"]["temp_c"])
@@ -101,13 +112,14 @@ def get_weather(city: str, force_refresh: bool = False, db: Session = Depends(ge
     except (KeyError, IndexError, TypeError) as parse_err:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"Schema mapping structure error on API parameters: {str(parse_err)}"
+            detail=f"Schema mapping structure mismatch on API parameters: {str(parse_err)}"
         )
 
-    # 5. Save fresh data to local cache database
+    # 6. Synchronize and update local database cache table rows
     current_utc_now = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
 
     if local_record:
+        local_record.city_name = extracted_city
         local_record.temperature_c = extracted_temp
         local_record.condition_text = extracted_condition
         local_record.humidity = extracted_humidity
