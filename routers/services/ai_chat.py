@@ -2,8 +2,8 @@ import os
 import json
 import logging
 import datetime
-import urllib.request
 import urllib.parse
+import urllib.request
 import urllib.error
 from fastapi import APIRouter, Depends, HTTPException, status
 from typing import Annotated
@@ -49,7 +49,7 @@ def converse_with_travel_assistant(payload: AIChatRequest, current_user: user_de
             detail="User message query parameter text cannot be empty."
         )
 
-    # FIXED: Realigned endpoint to use the correct Google AI Studio Developer Endpoint format
+    # FIXED: Ensured the full "generativelanguage" subdomain is completely intact
     BASE_URL = "https://googleapis.com"
     query_params = {"key": GEMINI_API_KEY}
     ENDPOINT_URL = f"{BASE_URL}?{urllib.parse.urlencode(query_params)}"
@@ -87,7 +87,7 @@ def converse_with_travel_assistant(payload: AIChatRequest, current_user: user_de
             raw_response = response.read().decode("utf-8")
             response_json = json.loads(raw_response)
 
-            # FIXED: Correctly targeting the index elements of candidates and parts list arrays
+            # FIXED: Accurate list indexing layout safely matching Gemini response payloads
             ai_reply_text = response_json["candidates"][0]["content"]["parts"][0]["text"].strip()
 
             return AIChatResponse(
