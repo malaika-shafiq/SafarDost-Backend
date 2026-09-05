@@ -6,7 +6,6 @@ import urllib.error
 import logging
 from fastapi import APIRouter, Depends, HTTPException, status
 from typing import Annotated
-from sqlalchemy.orm import Session
 
 from utils.auth_utils import get_current_user
 from schemas.map_schemas import CoordinateResponse, RouteDistanceInput, RouteDistanceResponse
@@ -17,8 +16,14 @@ router = APIRouter(prefix="/maps", tags=["Google Maps API Service Integration"])
 
 user_dependency = Annotated[dict, Depends(get_current_user)]
 
-# Fetch the API key once globally at startup
-GOOGLE_MAPS_KEY = os.getenv("GOOGLE_MAPS_API_KEY")
+# Fetch the raw key from cloud parameters environment
+RAW_MAPS_KEY = os.getenv("GOOGLE_MAPS_API_KEY")
+
+# FIXED: Deep sanitize whitespace/newlines right at startup to prevent 404 URL breaks
+if RAW_MAPS_KEY:
+    GOOGLE_MAPS_KEY = RAW_MAPS_KEY.replace("\n", "").replace("\r", "").strip().replace('"', '').replace("'", "")
+else:
+    GOOGLE_MAPS_KEY = None
 
 
 def clean_address_string(text: str) -> str:
@@ -48,7 +53,7 @@ def get_location_coordinates(address: str, current_user: user_dependency):
             detail="Address text query parameter cannot be empty."
         )
 
-    cleaned_address = clean_address_string(address)
+    clean_city = clean_address_string(address)
 
     # Presentation Fallback Safety Shield if key is missing completely
     if not GOOGLE_MAPS_KEY:
@@ -57,28 +62,31 @@ def get_location_coordinates(address: str, current_user: user_dependency):
             address_query=address,
             latitude=36.3167,
             longitude=74.6500,
-            formatted_address=f"{cleaned_address}, Gilgit-Baltistan, Pakistan (Mock Simulation)"
+            formatted_address=f"{clean_city}, Gilgit-Baltistan, Pakistan (Mock Simulation)"
         )
 
-    # FIXED: Hardcoded the accurate official Google Geocoding JSON sub-path
-    BASE_URL = "https://googleapis.com"
+    BASE_URL = "https://maps.googleapis.com/maps/api/geocode/json"
     query_params = {
-        "address": cleaned_address,
+        "address": clean_city,
         "key": GOOGLE_MAPS_KEY
     }
     TARGET_URL = f"{BASE_URL}?{urllib.parse.urlencode(query_params)}"
 
     try:
-        req = urllib.request.Request(TARGET_URL, method="GET", headers={"User-Agent": "SafarDost/1.0"})
-        with urllib.request.urlopen(req, timeout=8) as response:
+        headers = {"User-Agent": "SafarDostTravelApp/1.0 Prototype"}
+        req = urllib.request.Request(TARGET_URL, method="GET", headers=headers)
+
+        with urllib.request.urlopen(req, timeout=10.0) as response:
             parsed_json = json.loads(response.read().decode("utf-8"))
 
             api_status = parsed_json.get("status")
 
             if api_status == "OK" and parsed_json.get("results"):
-                first_result = parsed_json["results"][0]
+                # FIXED: Extract index object 0 from the matching payload results array
+                first_result = parsed_json["results"]
                 location_node = first_result["geometry"]["location"]
                 formatted_name = first_result["formatted_address"]
+
                 return CoordinateResponse(
                     address_query=address,
                     latitude=float(location_node["lat"]),
@@ -86,10 +94,9 @@ def get_location_coordinates(address: str, current_user: user_dependency):
                     formatted_address=formatted_name
                 )
 
-            # Handle explicit Google billing/quota/key rejections
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Google Geocoding API rejected the parameters. Status: {api_status}. Error Message: {parsed_json.get('error_message', 'No message details provided.')}"
+                detail=f"Google Geocoding API rejected the parameters. Status: {api_status}. Message: {parsed_json.get('error_message', 'No details provided.')}"
             )
 
     except urllib.error.HTTPError as http_ex:
@@ -133,8 +140,7 @@ def calculate_route_distance(payload: RouteDistanceInput, current_user: user_dep
             duration_text="4 hours 30 mins via M-2 Motorway"
         )
 
-    # FIXED: Hardcoded the accurate official Google Directions JSON sub-path
-    BASE_URL = "https://googleapis.com"
+    BASE_URL = "https://maps.googleapis.com/maps/api/directions/json"
     query_params = {
         "origin": clean_origin,
         "destination": clean_dest,
@@ -143,15 +149,19 @@ def calculate_route_distance(payload: RouteDistanceInput, current_user: user_dep
     TARGET_URL = f"{BASE_URL}?{urllib.parse.urlencode(query_params)}"
 
     try:
-        req = urllib.request.Request(TARGET_URL, method="GET", headers={"User-Agent": "SafarDost/1.0"})
-        with urllib.request.urlopen(req, timeout=8) as response:
+        headers = {"User-Agent": "SafarDostTravelApp/1.0 Prototype"}
+        req = urllib.request.Request(TARGET_URL, method="GET", headers=headers)
+
+        with urllib.request.urlopen(req, timeout=10.0) as response:
             parsed_json = json.loads(response.read().decode("utf-8"))
 
             api_status = parsed_json.get("status")
 
             if api_status == "OK" and parsed_json.get("routes"):
-                first_route = parsed_json["routes"][0]
-                first_leg = first_route["legs"][0]
+                # FIXED: Extract index object 0 from the routes and legs payload arrays
+                first_route = parsed_json["routes"]
+                first_leg = first_route["legs"]
+
                 return RouteDistanceResponse(
                     origin=first_leg["start_address"],
                     destination=first_leg["end_address"],
