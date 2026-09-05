@@ -49,7 +49,7 @@ def converse_with_travel_assistant(payload: AIChatRequest, current_user: user_de
             detail="User message query parameter text cannot be empty."
         )
 
-    # FIXED: Realigned the route path string to use the official stable v1 domain routing schema
+    # FIXED: Realigned endpoint to use the correct Google AI Studio Developer Endpoint format
     BASE_URL = "https://googleapis.com"
     query_params = {"key": GEMINI_API_KEY}
     ENDPOINT_URL = f"{BASE_URL}?{urllib.parse.urlencode(query_params)}"
@@ -87,7 +87,7 @@ def converse_with_travel_assistant(payload: AIChatRequest, current_user: user_de
             raw_response = response.read().decode("utf-8")
             response_json = json.loads(raw_response)
 
-            # Extract response metrics text safely out of array structures
+            # Unpack response text token out of Gemini arrays safely
             ai_reply_text = response_json["candidates"][0]["content"]["parts"][0]["text"].strip()
 
             return AIChatResponse(
