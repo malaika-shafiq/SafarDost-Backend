@@ -71,8 +71,8 @@ def get_weather(city: str, force_refresh: bool = False, db: Session = Depends(ge
         except Exception:
             error_message = error_body
 
-        # FIXED: Removed the syntax error and mapped proper codes securely
-        if http_ex.code in:
+        # FIXED: Populated the list values to fix the SyntaxError completely
+        if http_ex.code in [400, 401, 403]:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"WeatherAPI validation error (Status {http_ex.code}): {error_message}"
