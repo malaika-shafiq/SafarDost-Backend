@@ -9,22 +9,23 @@ from sqlalchemy.orm import Session
 from database import get_db
 from models.weather import WeatherCache
 from schemas.weather_schemas import WeatherResponse, WeatherPurgeResponse
-from utils.auth_utils import get_current_user
+from utils.auth_utils import get_current_user  # existing security dependency
 
 router = APIRouter(prefix="", tags=["Weather Services"])
 
 
 @router.get("/weather", response_model=WeatherResponse)
 def get_weather(city: str, force_refresh: bool = False, db: Session = Depends(get_db)):
-    # 1. Search local SQLite cache
+    # 1. Search local SQLite database using case-insensitive partial match pattern
     local_record = db.query(WeatherCache).filter(WeatherCache.city_name.ilike(f"%{city}%")).first()
 
-    # 2. Cache Validation Layer (30 Mins)
+    # 2. Cache Check (Only skipped if the user passes force_refresh=True)
     if local_record and not force_refresh:
         current_time = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
         record_time = local_record.last_updated
         time_passed = current_time - record_time
 
+        # If data is fresher than 30 minutes, return it instantly
         if time_passed < datetime.timedelta(minutes=30):
             return WeatherResponse(
                 city_name=local_record.city_name,
@@ -38,73 +39,60 @@ def get_weather(city: str, force_refresh: bool = False, db: Session = Depends(ge
     if not RAW_KEY:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Railway/Render Environment Configuration Error: WEATHER_API_KEY variable is empty or missing."
+            detail="Environment Configuration Error: WEATHER_API_KEY variable is empty or missing."
         )
 
     API_KEY = RAW_KEY.strip().replace('"', '').replace("'", "")
 
-    # Clean URL parameters assembly
-    BASE_URL = "https://api.openweathermap.org/data/2.5/weather"
+    # Clean URL assembly for WeatherAPI.com
+    BASE_URL = "https://weatherapi.com"
     query_params = {
-        "q": f"{city},PK",
-        "appid": API_KEY,
-        "units": "metric"
+        "key": API_KEY,
+        "q": city,
+        "aqi": "no"
     }
     encoded_params = urllib.parse.urlencode(query_params)
     SECURE_URL = f"{BASE_URL}?{encoded_params}"
 
     try:
-        # Standard lightweight agent header to bypass platform proxy drops
         headers = {"User-Agent": "SafarDostTravelApp/1.0 Prototype"}
         req = urllib.request.Request(SECURE_URL, headers=headers)
 
         with urllib.request.urlopen(req, timeout=10.0) as response:
             raw_data = response.read().decode("utf-8")
-
-            # Catch HTML redirects safely
-            if raw_data.strip().startswith("<!DOCTYPE") or raw_data.strip().startswith("<html"):
-                masked_key = f"{API_KEY[:4]}... (Length: {len(API_KEY)})" if len(API_KEY) > 4 else "Invalid/Too Short"
-                raise ValueError(
-                    f"OpenWeather firewall redirected this request to their homepage HTML. "
-                    f"This usually means your API Key value is invalid or blocked. "
-                    f"Your server is currently reading the key as: {masked_key}"
-                )
-
             weather_data = json.loads(raw_data)
 
     except urllib.error.HTTPError as http_ex:
         error_msg = http_ex.read().decode("utf-8")
+        # FIXED: Corrected syntax check for API credential errors
+        if http_ex.code in [400, 401, 403]:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail=f"WeatherAPI rejected the key/parameters. Server responded: {error_msg}"
+            )
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"OpenWeather Gateway rejected credentials or parameters (Status {http_ex.code}): {error_msg}"
-        )
-    except ValueError as val_err:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=str(val_err)
+            detail=f"External gateway returned error status {http_ex.code}"
         )
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=f"Network bridge transport exception: {str(e)}"
+            detail=f"External weather service transport failed: {str(e)}"
         )
 
-    # 4. Extract data keys using official OpenWeather schema array mapping
+    # 4. Pull out individual pieces from official WeatherAPI.com response structure
     try:
-        extracted_city = weather_data["name"]
-        extracted_temp = float(weather_data["main"]["temp"])
-
-        # FIXED: Access the first element [0] of the weather list block array safely
-        extracted_condition = weather_data["weather"][0]["description"]
-
-        extracted_humidity = int(weather_data["main"]["humidity"])
+        extracted_city = weather_data["location"]["name"]
+        extracted_temp = float(weather_data["current"]["temp_c"])
+        extracted_condition = weather_data["current"]["condition"]["text"]
+        extracted_humidity = int(weather_data["current"]["humidity"])
     except (KeyError, IndexError, TypeError) as parse_err:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"Schema mapping structure error on backend parameters: {str(parse_err)}"
+            detail=f"Failed to process WeatherAPI layout schema parameters: {str(parse_err)}"
         )
 
-    # 5. Commit to database cache
+    # 5. Save fresh data using up-to-date time strategy
     current_utc_now = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
 
     if local_record:
@@ -136,9 +124,20 @@ def get_weather(city: str, force_refresh: bool = False, db: Session = Depends(ge
 
 @router.post("/admin/weather/purge", response_model=WeatherPurgeResponse)
 def purge_weather_cache(current_user=Depends(get_current_user), db: Session = Depends(get_db)):
+    """
+    Protected Admin Endpoint: Force-clears all cached data rows from the weather_caches table.
+    """
     if current_user.get("role") != "admin":
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin privileges required.")
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Administrative privileges are required to perform this cache clearance."
+        )
+
     query = db.query(WeatherCache)
     deleted_count = query.delete(synchronize_session=False)
     db.commit()
-    return WeatherPurgeResponse(success=True, records_deleted=deleted_count)
+
+    return WeatherPurgeResponse(
+        success=True,
+        records_deleted=deleted_count
+    )
