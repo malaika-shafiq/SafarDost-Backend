@@ -3,6 +3,7 @@ import json
 import logging
 import datetime
 import urllib.request
+import urllib.parse
 import urllib.error
 from fastapi import APIRouter, Depends, HTTPException, status
 from typing import Annotated
@@ -19,7 +20,7 @@ user_dependency = Annotated[dict, Depends(get_current_user)]
 # Fetch raw key string from environment host configurations
 RAW_GEMINI_KEY = os.getenv("GOOGLE_GEMINI_KEY")
 
-# FIXED: Deep sanitize whitespace and quotes at startup to prevent endpoint corruption
+# Deep sanitize whitespace and quotes at startup to prevent endpoint corruption
 if RAW_GEMINI_KEY:
     GEMINI_API_KEY = RAW_GEMINI_KEY.replace("\n", "").replace("\r", "").strip().replace('"', '').replace("'", "")
 else:
@@ -48,10 +49,10 @@ def converse_with_travel_assistant(payload: AIChatRequest, current_user: user_de
             detail="User message query parameter text cannot be empty."
         )
 
-    # FIXED: Hardcoded the accurate official Gemini 1.5 Flash content generation path
+    # Official Gemini 1.5 Flash content generation path
     ENDPOINT_URL = f"https://googleapis.com{GEMINI_API_KEY}"
 
-    # 🛠️ SYSTEM GUARDRAIL: Extracted to native system instruction schemas for optimal model compliance
+    # SYSTEM GUARDRAIL: Grounding prompt rules
     system_instruction = (
         "You are Safardost AI, an elite, interactive conversational travel concierge embedded inside the Safardost mobile application. "
         "Your sole purpose is to assist users with traveling, packing, logistics, route status, food, culture, and safety within Pakistan. "
@@ -84,8 +85,8 @@ def converse_with_travel_assistant(payload: AIChatRequest, current_user: user_de
             raw_response = response.read().decode("utf-8")
             response_json = json.loads(raw_response)
 
-            # FIXED: Added array list brackets indexing [0] to unpack structural nested nodes safely
-            ai_reply_text = response_json["candidates"]["content"]["parts"]["text"].strip()
+            # FIXED: Added the required list index offsets to unpack nested arrays safely
+            ai_reply_text = response_json["candidates"][0]["content"]["parts"][0]["text"].strip()
 
             return AIChatResponse(
                 assistant_reply=ai_reply_text,
@@ -100,19 +101,9 @@ def converse_with_travel_assistant(payload: AIChatRequest, current_user: user_de
             detail=f"Gemini Upstream Platform rejected call parameters (Status {http_ex.code}): {error_content[:150]}"
         )
     except Exception as e:
-        logger.warning(
-            f"Outbound AI portal exception caught for User {user_id}. Running fallback rules. Trace: {str(e)}")
-
-        # 🏛️ CONVERSATIONAL PRESENTATION FALLBACK RULES
-        fallback_msg = raw_message.lower()
-        reply = "That is an excellent question! As your Safardost assistant, I highly recommend verifying active high-altitude pass closures (like Babusar or Lowari) directly via National Highway Authority (NHA) alerts or local travel advisories before starting your journey."
-
-        if "pack" in fallback_msg:
-            reply = "When packing for northern Pakistan during seasonal shifts, always carry high-quality thermal inner wear, windproof fleece jackets, a warm beanie, and dependable trekking boots to handle rugged mountain trails comfortably."
-        elif "open" in fallback_msg or "babusar" in fallback_msg:
-            reply = "Babusar Top road status alert: This pass (4,173m) routinely shuts down due to heavy snowfall from late October until early June. During these months, bypass the pass and take the alternate Karakoram Highway route via Besham and Kohistan to enter Gilgit safely."
-
-        return AIChatResponse(
-            assistant_reply=reply,
-            timestamp_utc=datetime.datetime.now(datetime.timezone.utc).isoformat()
+        # Re-raise the raw exception temporarily during debugging so we can pinpoint the blocker in Swagger
+        logger.error(f"Live Gemini request pipeline execution failure: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Live AI backend connection error: {str(e)}"
         )
