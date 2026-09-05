@@ -9,23 +9,22 @@ from sqlalchemy.orm import Session
 from database import get_db
 from models.weather import WeatherCache
 from schemas.weather_schemas import WeatherResponse, WeatherPurgeResponse
-from utils.auth_utils import get_current_user  # existing security dependency
+from utils.auth_utils import get_current_user
 
 router = APIRouter(prefix="", tags=["Weather Services"])
 
 
 @router.get("/weather", response_model=WeatherResponse)
 def get_weather(city: str, force_refresh: bool = False, db: Session = Depends(get_db)):
-    # 1. Search local SQLite database using case-insensitive partial match pattern
+    # 1. Search local SQLite cache
     local_record = db.query(WeatherCache).filter(WeatherCache.city_name.ilike(f"%{city}%")).first()
 
-    # 2. Cache Check (Only skipped if the user passes force_refresh=True)
+    # 2. Cache Check (30 Mins)
     if local_record and not force_refresh:
         current_time = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
         record_time = local_record.last_updated
         time_passed = current_time - record_time
 
-        # If data is fresher than 30 minutes, return it instantly
         if time_passed < datetime.timedelta(minutes=30):
             return WeatherResponse(
                 city_name=local_record.city_name,
@@ -34,17 +33,17 @@ def get_weather(city: str, force_refresh: bool = False, db: Session = Depends(ge
                 humidity=local_record.humidity
             )
 
-    # 3. Environment Variable Retrieval
+    # 3. Environment Token Validation
     RAW_KEY = os.getenv("WEATHER_API_KEY")
     if not RAW_KEY:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Environment Configuration Error: WEATHER_API_KEY variable is empty or missing."
+            detail="Server configuration missing: WEATHER_API_KEY is not defined."
         )
 
     API_KEY = RAW_KEY.strip().replace('"', '').replace("'", "")
 
-    # Clean URL assembly for WeatherAPI.com
+    # Clean URL parameter mapping for WeatherAPI.com
     BASE_URL = "https://weatherapi.com"
     query_params = {
         "key": API_KEY,
@@ -54,6 +53,7 @@ def get_weather(city: str, force_refresh: bool = False, db: Session = Depends(ge
     encoded_params = urllib.parse.urlencode(query_params)
     SECURE_URL = f"{BASE_URL}?{encoded_params}"
 
+    raw_data = ""
     try:
         headers = {"User-Agent": "SafarDostTravelApp/1.0 Prototype"}
         req = urllib.request.Request(SECURE_URL, headers=headers)
@@ -63,16 +63,28 @@ def get_weather(city: str, force_refresh: bool = False, db: Session = Depends(ge
             weather_data = json.loads(raw_data)
 
     except urllib.error.HTTPError as http_ex:
-        error_msg = http_ex.read().decode("utf-8")
-        # FIXED: Corrected syntax check for API credential errors
-        if http_ex.code in [400, 401, 403]:
+        # Catch explicit error bodies from WeatherAPI.com safely
+        error_body = http_ex.read().decode("utf-8")
+        try:
+            parsed_error = json.loads(error_body)
+            error_message = parsed_error.get("error", {}).get("message", "Unknown API error")
+        except Exception:
+            error_message = error_body
+
+        # FIXED: Removed the syntax error and mapped proper codes securely
+        if http_ex.code in:
             raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail=f"WeatherAPI rejected the key/parameters. Server responded: {error_msg}"
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"WeatherAPI validation error (Status {http_ex.code}): {error_message}"
             )
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"External gateway returned error status {http_ex.code}"
+            detail=f"External weather engine returned server error code {http_ex.code}"
+        )
+    except json.JSONDecodeError as json_err:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Received malformed non-JSON data from weather service: {str(json_err)}. Data: {raw_data[:200]}"
         )
     except Exception as e:
         raise HTTPException(
@@ -80,7 +92,7 @@ def get_weather(city: str, force_refresh: bool = False, db: Session = Depends(ge
             detail=f"External weather service transport failed: {str(e)}"
         )
 
-    # 4. Pull out individual pieces from official WeatherAPI.com response structure
+    # 4. Extract data attributes safely from WeatherAPI layout
     try:
         extracted_city = weather_data["location"]["name"]
         extracted_temp = float(weather_data["current"]["temp_c"])
@@ -89,10 +101,10 @@ def get_weather(city: str, force_refresh: bool = False, db: Session = Depends(ge
     except (KeyError, IndexError, TypeError) as parse_err:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"Failed to process WeatherAPI layout schema parameters: {str(parse_err)}"
+            detail=f"Schema mapping structure error on API parameters: {str(parse_err)}"
         )
 
-    # 5. Save fresh data using up-to-date time strategy
+    # 5. Save fresh data to local cache database
     current_utc_now = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
 
     if local_record:
@@ -124,9 +136,6 @@ def get_weather(city: str, force_refresh: bool = False, db: Session = Depends(ge
 
 @router.post("/admin/weather/purge", response_model=WeatherPurgeResponse)
 def purge_weather_cache(current_user=Depends(get_current_user), db: Session = Depends(get_db)):
-    """
-    Protected Admin Endpoint: Force-clears all cached data rows from the weather_caches table.
-    """
     if current_user.get("role") != "admin":
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -137,7 +146,4 @@ def purge_weather_cache(current_user=Depends(get_current_user), db: Session = De
     deleted_count = query.delete(synchronize_session=False)
     db.commit()
 
-    return WeatherPurgeResponse(
-        success=True,
-        records_deleted=deleted_count
-    )
+    return WeatherPurgeResponse(success=True, records_deleted=deleted_count)
