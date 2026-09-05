@@ -2,6 +2,7 @@ import os
 import json
 import datetime
 import urllib.request
+import urllib.parse
 import urllib.error
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
@@ -33,36 +34,58 @@ def get_weather(city: str, force_refresh: bool = False, db: Session = Depends(ge
                 humidity=local_record.humidity
             )
 
-    # 3. Use built-in urllib engine if missing, old, or forcefully refreshed
+    # 3. Use built-in urllib engine with correct OpenWeather configurations
     API_KEY = os.getenv("WEATHER_API_KEY")
-    SECURE_URL = f"https://weatherapi.com{API_KEY}&q={city}"
+    if not API_KEY:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Weather API key is missing from environment variables."
+        )
+
+    # Clean URL assembly to prevent string corruption
+    BASE_URL = "https://openweathermap.org"
+    query_params = {
+        "q": f"{city},PK",  # Defaults to Pakistan for Safar Dost
+        "appid": API_KEY,
+        "units": "metric"  # For Celsius
+    }
+    encoded_params = urllib.parse.urlencode(query_params)
+    SECURE_URL = f"{BASE_URL}?{encoded_params}"
 
     try:
-        with urllib.request.urlopen(SECURE_URL) as response:
+        headers = {"User-Agent": "Mozilla/5.0"}
+        req = urllib.request.Request(SECURE_URL, headers=headers)
+
+        with urllib.request.urlopen(req, timeout=10.0) as response:
             raw_data = response.read().decode("utf-8")
             weather_data = json.loads(raw_data)
 
     except urllib.error.HTTPError as http_ex:
-        if http_ex.code == 400:
+        if http_ex.code == 401:
             raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid or unactivated API Key provided to the engine."
+            )
+        elif http_ex.code == 404:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
                 detail="Could not retrieve weather details for the specified location."
             )
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="External communication barrier encountered."
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"External backend service returned error status {http_ex.code}"
         )
-    except Exception:
+    except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="External weather service is temporarily offline."
+            detail=f"External weather service transport failed: {str(e)}"
         )
 
-    # 4. Pull out individual pieces from response dictionary
-    extracted_city = weather_data["location"]["name"]
-    extracted_temp = weather_data["current"]["temp_c"]
-    extracted_condition = weather_data["current"]["condition"]["text"]
-    extracted_humidity = weather_data["current"]["humidity"]
+    # 4. Pull out individual pieces from official OpenWeather response structure
+    extracted_city = weather_data["name"]
+    extracted_temp = float(weather_data["main"]["temp"])
+    extracted_condition = weather_data["weather"][0]["description"]  # OpenWeather nests array objects here
+    extracted_humidity = int(weather_data["main"]["humidity"])
 
     # 5. Save fresh data using up-to-date time strategy
     current_utc_now = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
@@ -97,16 +120,14 @@ def get_weather(city: str, force_refresh: bool = False, db: Session = Depends(ge
 @router.post("/admin/weather/purge", response_model=WeatherPurgeResponse)
 def purge_weather_cache(current_user=Depends(get_current_user), db: Session = Depends(get_db)):
     """
-    Protected Admin Endpoint: Force-clears all cached data rows from the weather_caches SQLite table.
+    Protected Admin Endpoint: Force-clears all cached data rows from the weather_caches table.
     """
-    # Safety switch: Verify if user dictionary role maps explicitly to admin [1, 2]
     if current_user.get("role") != "admin":
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Administrative privileges are required to perform this cache clearance."
         )
 
-    # Target the cache table and execute a delete operation [3]
     query = db.query(WeatherCache)
     deleted_count = query.delete(synchronize_session=False)
     db.commit()
