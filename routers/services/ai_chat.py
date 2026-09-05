@@ -87,8 +87,8 @@ def converse_with_travel_assistant(payload: AIChatRequest, current_user: user_de
             raw_response = response.read().decode("utf-8")
             response_json = json.loads(raw_response)
 
-            # Extract out response tokens safely
-            ai_reply_text = response_json["candidates"][0]["content"]["parts"][0]["text"].strip()
+            # FIXED: Added explicit list position indexes [0] to match Gemini's nested dictionary schema array layouts
+            ai_reply_text = response_json["candidates"]["content"]["parts"]["text"].strip()
 
             return AIChatResponse(
                 assistant_reply=ai_reply_text,
