@@ -34,8 +34,10 @@ class Locations(Base):
 
     # 🔗 Relational Back-Links: Connects a city to all its nested marketplace resources
     places = relationship("Places", back_populates="location")
-    # hotels = relationship("Hotels", back_populates="location")
-    # restaurants = relationship("Restaurants", back_populates="location")
+    hotels = relationship("Hotels", back_populates="location")
+    restaurants = relationship("Restaurants", back_populates="location")
+    tour_packages = relationship("TourPackages", back_populates="location")
+
     # Inside models/location.py — Update your creator relationship line to match this:
     creator = relationship("Users", foreign_keys="[Locations.creator_id]")
 

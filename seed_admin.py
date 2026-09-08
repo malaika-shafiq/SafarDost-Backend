@@ -9,6 +9,7 @@ from models.category import Categories
 from models.place import Places
 #from models.restaurant import Restaurants
 from models.location import Locations  # 👈 Add this line!
+from models.tour_package import TourPackages  # 👈 ADD THIS LINE HERE!
 
 # Import your password hashing utility from your utils script
 from utils.auth_utils import hash_password

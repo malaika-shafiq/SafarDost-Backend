@@ -6,6 +6,7 @@ from routers.auth import router as auth_router
 from routers.places import router as places_router
 from routers.hotels import router as hotels_router
 from routers.restaurants import router as restaurants_router
+from routers.tour_packages import router as tour_package_router
 from routers.categories import router as categories_router
 from routers.locations import router as locations_router
 from routers.reviews import router as reviews_router
@@ -46,6 +47,7 @@ app.include_router(auth_router)
 app.include_router(places_router)
 app.include_router(hotels_router)
 app.include_router(restaurants_router)
+app.include_router(tour_package_router)
 app.include_router(categories_router)
 app.include_router(locations_router)
 app.include_router(reviews_router)

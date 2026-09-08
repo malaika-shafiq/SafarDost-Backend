@@ -6,6 +6,7 @@ from models.location import Locations
 from models.category import Categories
 from models.place import Places
 from models.image import Images
+from models.tour_package import TourPackages
 
 
 def rebuild_database():

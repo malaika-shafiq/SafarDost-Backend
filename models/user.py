@@ -48,7 +48,8 @@ class Users(Base):
     created_categories = relationship("Categories", foreign_keys="Categories.creator_id", back_populates="creator")
 
     # Left aside for future alignment modifications
-    created_hotels = relationship("Hotels", back_populates="creator")
+    # 🏛️ FIXED AUDIT LINK: Add explicit string mapping parameters to resolve the lookup loop!
+    created_hotels = relationship("Hotels", foreign_keys="[Hotels.creator_id]", back_populates="creator")
 
     # 🏛️ BILATERAL ALIGNMENT: Perfectly mirrors your booking module relationship definitions
     bookings = relationship("HotelBookings", back_populates="user")

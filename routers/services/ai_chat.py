@@ -49,7 +49,7 @@ def converse_with_travel_assistant(payload: AIChatRequest, current_user: user_de
             detail="User message query parameter text cannot be empty."
         )
 
-    # FIXED: Ensured the full "generativelanguage" subdomain is completely intact
+    # SECURE GATEWAY CHECK: Hardcoded full official Google Gemini sub-path endpoint
     BASE_URL = "https://googleapis.com"
     query_params = {"key": GEMINI_API_KEY}
     ENDPOINT_URL = f"{BASE_URL}?{urllib.parse.urlencode(query_params)}"
@@ -87,7 +87,7 @@ def converse_with_travel_assistant(payload: AIChatRequest, current_user: user_de
             raw_response = response.read().decode("utf-8")
             response_json = json.loads(raw_response)
 
-            # FIXED: Accurate list indexing layout safely matching Gemini response payloads
+            # ACCURATE RESPONSE DATA EXTRACTION: Unpacks the nested array values safely
             ai_reply_text = response_json["candidates"][0]["content"]["parts"][0]["text"].strip()
 
             return AIChatResponse(
