@@ -1,345 +1,356 @@
-from fastapi import APIRouter, Depends, HTTPException, status
-from typing import Annotated, List
-from datetime import date
-from sqlalchemy.orm import Session
+import math
+from datetime import datetime
+from typing import Annotated, Optional
+from fastapi import APIRouter, Depends, HTTPException, status, Query
+from sqlalchemy import desc
+from sqlalchemy.orm import Session, joinedload
 from database import get_db
-from models import Hotels, Restaurants
-from models.booking import HotelBookings, TransportBookings, RestaurantBookings
-from schemas import booking_schemas
-from utils.auth_utils import get_current_user
-from utils.mail_utils import send_vendor_booking_email, send_restaurant_booking_email, send_transport_booking_email
 
+# Model and Schema Cross-Imports — ALL ACTIVATED
+from models.booking import Bookings, HotelBookings, RestaurantBookings, TransportBookings, TourBookings
+from models.booking import BookingTypeEnum, BookingStatusEnum, PaymentStatusEnum
+from models.hotel import Hotels, HotelRooms, RoomStatusEnum
+from models.restaurant import Restaurants
+from models.transport import Transports, TransportStatusEnum
+from models.tour_package import TourPackages, PackageStatusEnum
+from schemas.booking_schemas import BookingCreate, BookingResponse
+from utils.auth_utils import get_current_user  # 🔒 Security Gate Dependency
 
-router = APIRouter(prefix="/hotels/book", tags=["Hotel Bookings"])
+router = APIRouter(prefix="/bookings", tags=["Polymorphic Booking & Checkout System"])
 
 db_dependency = Annotated[Session, Depends(get_db)]
 user_dependency = Annotated[dict, Depends(get_current_user)]
 
 
-# ==============================================================================
-# HOTEL RESERVATIONS SECTION
-# ==============================================================================
-
-@router.post("/hotel", response_model=booking_schemas.HotelBookingResponse, status_code=status.HTTP_201_CREATED)
-def reserve_hotel_room(booking_request: booking_schemas.HotelBookingCreate, db: db_dependency, current_user: user_dependency):
+# ==========================================
+# 1. READ ALL BOOKINGS (With Advanced Multi-Role Filter Scopes)
+# ==========================================
+@router.get("", status_code=status.HTTP_200_OK)
+def get_all_bookings_paginated(
+        db: db_dependency,
+        current_user: user_dependency,
+        page: int = Query(1, ge=1, description="Page number starting from 1"),
+        limit: int = Query(10, ge=1, le=50, description="Items per page"),
+        booking_type: Optional[BookingTypeEnum] = Query(None, description="Filter by booking type context"),
+        booking_status: Optional[BookingStatusEnum] = Query(None, description="Filter by transaction status")
+):
     """
-    Creates a brand new hotel accommodation reservation in Pakistan and triggers an automated notification email.
+    ROLE DUAL ACCESS: Travelers see only their own histories. 
+    Administrators possess global visibility over the entire ecosystem matrix layout.
     """
-    if booking_request.check_in_date < date.today():
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Cannot create a reservation for a date that has already passed."
-        )
+    query = db.query(Bookings).options(
+        joinedload(Bookings.hotel_details),
+        joinedload(Bookings.restaurant_details),
+        joinedload(Bookings.transport_details),
+        joinedload(Bookings.tour_details)
+    )
 
-    if booking_request.check_out_date <= booking_request.check_in_date:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="The check-out date must occur after your selected check-in date."
-        )
+    # 🔒 MULTI-ROLE SECURITY FILTER ENFORCEMENT
+    if current_user.get("role") != "admin":
+        query = query.filter(Bookings.user_id == current_user.get("id"))
 
-    target_hotel = db.query(Hotels).filter(Hotels.id == booking_request.hotel_id).first()
-    if not target_hotel:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Hotel record item not found for ID: {booking_request.hotel_id}"
-        )
+    # Apply Segment Filter Constraints
+    if booking_type:
+        query = query.filter(Bookings.booking_type == booking_type)
+    if booking_status:
+        query = query.filter(Bookings.booking_status == booking_status)
 
-    delta_days = (booking_request.check_out_date - booking_request.check_in_date).days
-    calculated_cost = delta_days * target_hotel.price_per_night
+    query = query.order_by(desc(Bookings.created_at))
+    total_items = query.count()
 
-    db_booking = HotelBookings(
-        **booking_request.model_dump(),
+    offset = (page - 1) * limit
+    bookings_list = query.offset(offset).limit(limit).all()
+    total_pages = math.ceil(total_items / limit) if total_items > 0 else 0
+
+    return {
+        "items": bookings_list,
+        "total": total_items,
+        "page": page,
+        "limit": limit,
+        "total_pages": total_pages
+    }
+
+
+# ==========================================
+# 2. CREATE A NEW POLYMORPHIC BOOKING (🔒 Authenticated Users)
+# ==========================================
+@router.post("", response_model=BookingResponse, status_code=status.HTTP_201_CREATED)
+def create_transaction_booking(
+        booking_request: BookingCreate,
+        current_user: user_dependency,
+        db: db_dependency
+):
+    """
+    TRAVELER CHECKOUT GATEWAY: Routes transactional calculations based on the domain layout choice.
+    Validates capacity metrics, subtracts slots, and saves master records seamlessly.
+    """
+    # 1. Initialize Parent Master Transaction Shell (Option B Contacts + CNIC fields live)
+    db_master = Bookings(
         user_id=current_user.get("id"),
-        total_price=calculated_cost
+        booking_type=booking_request.booking_type,
+        contact_name=booking_request.contact_name.strip(),
+        contact_phone=booking_request.contact_phone.strip(),
+        contact_email=booking_request.contact_email.strip(),
+        cnic_number=booking_request.cnic_number.strip(),
+        special_requests=booking_request.special_requests,
+        booking_status=BookingStatusEnum.pending,
+        payment_status=PaymentStatusEnum.pending,
+        total_amount=0.0  # Calculated dynamically below
     )
 
-    db.add(db_booking)
-    db.commit()
-    db.refresh(db_booking)
+    db.add(db_master)
+    db.flush()  # Flushes master transaction shell to securely pull a transient ID record
 
-    send_vendor_booking_email(
-        booking_id=db_booking.id,
-        hotel_name=target_hotel.name,
-        location=target_hotel.location,
-        check_in=db_booking.check_in_date,
-        check_out=db_booking.check_out_date,
-        total_price=db_booking.total_price,
-        customer_email=current_user.get("email")
-    )
+    # ==========================================
+    # A. SUB-ROUTING WORKFLOW: HOTEL STAY SELECTION
+    # ==========================================
+    if booking_request.booking_type == BookingTypeEnum.hotel:
+        details = booking_request.hotel_details
+        if not details:
+            raise HTTPException(status_code=400, detail="Missing required 'hotel_details' payload block.")
 
-    return db_booking
+        target_room = db.query(HotelRooms).filter(
+            HotelRooms.id == details.room_id, 
+            HotelRooms.hotel_id == details.hotel_id
+        ).first()
 
+        if not target_room or target_room.status != RoomStatusEnum.available:
+            raise HTTPException(status_code=400, detail="The requested room type selection is currently unavailable.")
 
-@router.get("/hotel/history", response_model=List[booking_schemas.HotelBookingResponse], status_code=status.HTTP_200_OK)
-def get_user_hotel_booking_history(db: db_dependency, current_user: user_dependency):
-    """
-    Retrieves the entire chronological hotel reservation log for the logged-in traveler account.
-    """
-    bookings = db.query(HotelBookings).filter(HotelBookings.user_id == current_user.get("id")).all()
-    return bookings
+        # 🏎️ TIME CALCULATOR ENGINE: Compares dates to pull the total stay length automatically
+        nights = (details.check_out - details.check_in).days
+        if nights <= 0:
+            raise HTTPException(status_code=400, detail="Invalid date matrix setup: Check-out must exceed Check-in.")
 
+        # Total Price = Room Price × Nights × Number of Rooms
+        db_master.total_amount = target_room.price_per_night * nights * details.number_of_rooms
 
-@router.put("/hotel/{booking_id}", response_model=booking_schemas.HotelBookingResponse, status_code=status.HTTP_200_OK)
-def update_hotel_reservation(booking_id: int, booking_request: booking_schemas.HotelBookingUpdate, db: db_dependency, current_user: user_dependency):
-    """
-    Dynamically modifies an existing hotel reservation's dates and updates financial totals in PKR.
-    """
-    db_booking = db.query(HotelBookings).filter(HotelBookings.id == booking_id).first()
-    if not db_booking:
-        raise HTTPException(status_code=404, detail="Hotel reservation record not found.")
+        db_child = HotelBookings(
+            booking_id=db_master.id,
+            hotel_id=details.hotel_id,
+            room_id=details.room_id,
+            check_in=details.check_in,
+            check_out=details.check_out,
+            number_of_rooms=details.number_of_rooms,
+            adults=details.adults,
+            children=details.children,
+            child_ages=details.child_ages
+        )
+        db.add(db_child)
 
-    if db_booking.user_id != current_user.get("id"):
-        raise HTTPException(status_code=403, detail="Adequate reservation ownership parameters missing.")
+    # ==========================================
+    # B. SUB-ROUTING WORKFLOW: RESTAURANT RESERVATION
+    # ==========================================
+    elif booking_request.booking_type == BookingTypeEnum.restaurant:
+        details = booking_request.restaurant_details
+        if not details:
+            raise HTTPException(status_code=400, detail="Missing required 'restaurant_details' payload block.")
 
-    incoming_data = booking_request.model_dump(exclude_unset=True)
+        # Restaurant reservations use a zero-based base amount model since bills are paid post-dining
+        db_master.total_amount = 0.0
 
-    final_check_in = incoming_data.get("check_in_date", db_booking.check_in_date)
-    final_check_out = incoming_data.get("check_out_date", db_booking.check_out_date)
+        db_child = RestaurantBookings(
+            booking_id=db_master.id,
+            restaurant_id=details.restaurant_id,
+            reservation_date=details.reservation_date,
+            reservation_time=details.reservation_time.strip(),
+            adults=details.adults,
+            children=details.children,
+            seating_preference=details.seating_preference
+        )
+        db.add(db_child)
 
-    if "check_in_date" in incoming_data and final_check_in < date.today():
-        raise HTTPException(status_code=400, detail="Cannot update reservation to a past date.")
+    # ==========================================
+    # C. SUB-ROUTING WORKFLOW: TRANSPORT FLEET SELECTION
+    # ==========================================
+    elif booking_request.booking_type == BookingTypeEnum.transport:
+        details = booking_request.transport_details
+        if not details:
+            raise HTTPException(status_code=400, detail="Missing required 'transport_details' payload block.")
 
-    if final_check_out <= final_check_in:
-        raise HTTPException(status_code=400, detail="Check-out date must occur after check-in.")
+        vehicle = db.query(Transports).filter(
+            Transports.id == details.transport_id, 
+            Transports.status == TransportStatusEnum.active
+        ).first()
 
-    for key, value in incoming_data.items():
-        setattr(db_booking, key, value)
+        if not vehicle:
+            raise HTTPException(status_code=400, detail="Target vehicle fleet profile is currently offline.")
 
-    target_hotel = db.query(Hotels).filter(Hotels.id == db_booking.hotel_id).first()
-    new_delta_days = (final_check_out - final_check_in).days
-    db_booking.total_price = new_delta_days * target_hotel.price_per_night
+        if vehicle.capacity < (details.adults + details.children):
+            raise HTTPException(status_code=400, detail="Seating Capacity Overflow: Selected fleet model seats are full.")
 
-    db.commit()
-    db.refresh(db_booking)
+        db_master.total_amount = vehicle.price
 
-    send_vendor_booking_email(
-        booking_id=db_booking.id,
-        hotel_name=target_hotel.name,
-        location=target_hotel.location,
-        check_in=db_booking.check_in_date,
-        check_out=db_booking.check_out_date,
-        total_price=db_booking.total_price,
-        customer_email=current_user.get("email")
-    )
+        db_child = TransportBookings(
+            booking_id=db_master.id,
+            transport_id=details.transport_id,
+            from_location=details.from_location.strip(),
+            to_location=details.to_location.strip(),
+            departure_date=details.departure_date,
+            departure_time=details.departure_time.strip(),
+            adults=details.adults,
+            children=details.children,
+            pickup_location=details.pickup_location,
+            dropoff_location=details.dropoff_location
+        )
+        db.add(db_child)
 
-    return db_booking
+    # ==========================================
+    # D. SUB-ROUTING WORKFLOW: PREDEFINED TOUR GROUP PACKAGE
+    # ==========================================
+    elif booking_request.booking_type == BookingTypeEnum.tour:
+        details = booking_request.tour_details
+        if not details:
+            raise HTTPException(status_code=400, detail="Missing required 'tour_details' payload block.")
 
+        package = db.query(TourPackages).filter(
+            TourPackages.id == details.package_id, 
+            TourPackages.status == PackageStatusEnum.active
+        ).first()
 
-@router.delete("/hotel/{booking_id}", status_code=status.HTTP_204_NO_CONTENT)
-def cancel_hotel_reservation(booking_id: int, db: db_dependency, current_user: user_dependency):
-    """
-    Permanently cancels and removes a hotel reservation record from the database.
-    """
-    db_booking = db.query(HotelBookings).filter(HotelBookings.id == booking_id).first()
-    if not db_booking:
-        raise HTTPException(status_code=404, detail="Hotel reservation record not found.")
+        if not package:
+            raise HTTPException(status_code=400, detail="Target holiday tour package is currently offline.")
 
-    if db_booking.user_id != current_user.get("id"):
-        raise HTTPException(status_code=403, detail="Adequate reservation ownership parameters missing.")
+        if package.available_slots < details.number_of_travelers:
+            raise HTTPException(status_code=400, detail="Booking Failure: Insufficient tour slots left.")
 
-    db.delete(db_booking)
-    db.commit()
+        # 📉 SLOT ACCUMULATION ENGINE: Deduct seats instantly to secure the spots
+        package.available_slots -= details.number_of_travelers
 
+        # Total Price = Package Base Rate × Passenger Tickets Count
+        db_master.total_amount = package.price * details.number_of_travelers
 
-
-# ==============================================================================
-# RESTAURANT RESERVATIONS SECTION
-# ==============================================================================
-
-@router.post("/restaurant", response_model=booking_schemas.RestaurantBookingResponse,
-             status_code=status.HTTP_201_CREATED)
-def reserve_restaurant_table(booking_request: booking_schemas.RestaurantBookingCreate, db: db_dependency,
-                             current_user: user_dependency):
-    """
-    Books a table at a local Pakistani restaurant and fires an automated vendor email alert.
-    """
-    if booking_request.reservation_date < date.today():
-        raise HTTPException(status_code=400, detail="Cannot book a table for a date that has already passed.")
-
-    target_restaurant = db.query(Restaurants).filter(Restaurants.id == booking_request.restaurant_id).first()
-    if not target_restaurant:
-        raise HTTPException(status_code=404,
-                            detail=f"Restaurant records not found for ID: {booking_request.restaurant_id}")
-
-    db_booking = RestaurantBookings(
-        **booking_request.model_dump(),
-        user_id=current_user.get("id")
-    )
-    db.add(db_booking)
-    db.commit()
-    db.refresh(db_booking)
-
-    send_restaurant_booking_email(
-        booking_id=db_booking.id,
-        restaurant_name=target_restaurant.name,
-        location=target_restaurant.location,
-        res_date=db_booking.reservation_date,
-        res_time=db_booking.reservation_time,
-        guests=db_booking.number_of_guests,
-        customer_email=current_user.get("email")
-    )
-
-    return db_booking
-
-
-@router.get("/restaurant/history", response_model=List[booking_schemas.RestaurantBookingResponse],
-            status_code=status.HTTP_200_OK)
-def get_user_restaurant_booking_history(db: db_dependency, current_user: user_dependency):
-    """
-    Retrieves the entire dining reservation log for the logged-in traveler account.
-    """
-    bookings = db.query(RestaurantBookings).filter(RestaurantBookings.user_id == current_user.get("id")).all()
-    return bookings
-
-
-@router.put("/restaurant/{booking_id}", response_model=booking_schemas.RestaurantBookingResponse,
-            status_code=status.HTTP_200_OK)
-def update_restaurant_table_reservation(booking_id: int, booking_request: booking_schemas.RestaurantBookingUpdate,
-                                        db: db_dependency, current_user: user_dependency):
-    """
-    Modifies dining numbers or arrival timings for an active table booking row.
-    """
-    db_booking = db.query(RestaurantBookings).filter(RestaurantBookings.id == booking_id).first()
-    if not db_booking:
-        raise HTTPException(status_code=404, detail="Dining reservation record item not found.")
-
-    if db_booking.user_id != current_user.get("id"):
-        raise HTTPException(status_code=403, detail="Adequate reservation ownership parameters missing.")
-
-    incoming_data = booking_request.model_dump(exclude_unset=True)
-
-    if "reservation_date" in incoming_data and incoming_data.get("reservation_date") < date.today():
-        raise HTTPException(status_code=400, detail="Cannot shift dining entries into historical timelines.")
-
-    for key, value in incoming_data.items():
-        setattr(db_booking, key, value)
+        db_child = TourBookings(
+            booking_id=db_master.id,
+            package_id=details.package_id,
+            number_of_travelers=details.number_of_travelers,
+            adults=details.adults,
+            children=details.children
+        )
+        db.add(db_child)
+        db.add(package)
 
     db.commit()
-    db.refresh(db_booking)
-
-    target_restaurant = db.query(Restaurants).filter(Restaurants.id == db_booking.restaurant_id).first()
-    send_restaurant_booking_email(
-        booking_id=db_booking.id,
-        restaurant_name=target_restaurant.name,
-        location=target_restaurant.location,
-        res_date=db_booking.reservation_date,
-        res_time=db_booking.reservation_time,
-        guests=db_booking.number_of_guests,
-        customer_email=current_user.get("email")
-    )
-
-    return db_booking
+    db.refresh(db_master)
+    return db_master
 
 
-@router.delete("/restaurant/{booking_id}", status_code=status.HTTP_204_NO_CONTENT)
-def cancel_restaurant_reservation(booking_id: int, db: db_dependency, current_user: user_dependency):
+# ==========================================
+# 3. READ A SINGLE BOOKING PROFILE DETAILS
+# ==========================================
+@router.get("/{booking_id}", response_model=BookingResponse, status_code=status.HTTP_200_OK)
+def get_individual_booking_by_id(
+        booking_id: int,
+        current_user: user_dependency,
+        db: db_dependency
+):
     """
-    Permanently deletes a restaurant table booking from database cache layer.
+    ROLE DUAL ACCESS: Fetch complete transaction metrics and nested sub-domain layout logs.
+    Restricts travelers strictly to their own rows while allowing Admins complete master visibility.
     """
-    db_booking = db.query(RestaurantBookings).filter(RestaurantBookings.id == booking_id).first()
-    if not db_booking:
-        raise HTTPException(status_code=404, detail="Dining reservation record item not found.")
+    booking = db.query(Bookings).options(
+        joinedload(Bookings.hotel_details),
+        joinedload(Bookings.restaurant_details),
+        joinedload(Bookings.transport_details),
+        joinedload(Bookings.tour_details)
+    ).filter(Bookings.id == booking_id).first()
 
-    if db_booking.user_id != current_user.get("id"):
-        raise HTTPException(status_code=403, detail="Adequate reservation ownership parameters missing.")
+    if not booking:
+        raise HTTPException(status_code=404, detail="Target transaction booking record not found.")
 
-    db.delete(db_booking)
+    # 🔒 ROLE ACCESS SECURITY CONSTRAINT GATE
+    if current_user.get("role") != "admin" and booking.user_id != current_user.get("id"):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Security Violation: Insufficient account permissions to view this transaction ledger."
+        )
+
+    return booking
+
+
+# ==========================================
+# 4. MODERATE STATUS APPROVALS/REJECTIONS (🔒 Admin Only Gate)
+# ==========================================
+@router.patch("/{booking_id}/status", response_model=BookingResponse, status_code=status.HTTP_200_OK)
+def moderate_booking_status_override(
+        booking_id: int,
+        new_status: BookingStatusEnum,
+        new_payment: PaymentStatusEnum,
+        current_user: user_dependency,
+        db: db_dependency
+):
+    """
+    ADMIN ONLY: Approve, Confirm, or Reject active transactional entries cleanly (Section 14 & 16) [INDEX: 0.1.24, 0.1.28].
+    Natively triggers safe inventory room status releases or vehicle seat slot reversals upon rejections.
+    """
+    # 🔒 ROLE ACCESS CHECK GATE
+    if current_user.get("role") != "admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Administrative privileges are required to override system transaction states."
+        )
+
+    booking = db.query(Bookings).filter(Bookings.id == booking_id).first()
+    if not booking:
+        raise HTTPException(status_code=404, detail="Target transaction booking record not found.")
+
+    # 🚨 INVENTORY STATE REVERSAL HANDLING ON REJECTIONS/CANCELLATIONS
+    if new_status in [BookingStatusEnum.rejected,
+                      BookingStatusEnum.cancelled] and booking.booking_status == BookingStatusEnum.pending:
+
+        # Scenario A: Releasing an active group holiday package slot allocation [INDEX: 0.1.28]
+        if booking.booking_type == BookingTypeEnum.tour and booking.tour_details:
+            package = db.query(TourPackages).filter(TourPackages.id == booking.tour_details.package_id).first()
+            if package:
+                # Refund seats back into the available pool natively
+                package.available_slots += booking.tour_details.number_of_travelers
+                db.add(package)
+
+        # Scenario B: Flipping a hotel room state back to available if the request fails [INDEX: 0.1.26]
+        elif booking.booking_type == BookingTypeEnum.hotel and booking.hotel_details:
+            room = db.query(HotelRooms).filter(HotelRooms.id == booking.hotel_details.room_id).first()
+            if room:
+                room.status = RoomStatusEnum.available
+                db.add(room)
+
+    # Apply overridden validation indicators safely
+    booking.booking_status = new_status
+    booking.payment_status = new_payment
+
+    db.add(booking)
+    db.commit()
+    db.refresh(booking)
+    return booking
+
+
+# ==========================================
+# 5. REMOVE / PURGE A RECORD LEDGER (🔒 Admin Only Gate)
+# ==========================================
+@router.delete("/{booking_id}", status_code=status.HTTP_200_OK)
+def delete_historical_booking_record(
+        booking_id: int,
+        current_user: user_dependency,
+        db: db_dependency
+):
+    """
+    ADMIN ONLY: Hard purge operation. Removes transaction entries from disk table lines.
+    Cascades down beautifully to clean out child details blocks with zero loose rows left.
+    """
+    # 🔒 ROLE ACCESS CHECK GATE
+    if current_user.get("role") != "admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Administrative privileges required to delete historical data rows from memory."
+        )
+
+    booking = db.query(Bookings).filter(Bookings.id == booking_id).first()
+    if not booking:
+        raise HTTPException(status_code=404, detail="Target tracking reservation code not found.")
+
+    # 🏛️ AUDIT TRAIL TERMINAL LOGGING: Uses variable data payloads directly to clear warnings!
+    print(f"[SECURITY CHECKOUT AUDIT] Admin ID {current_user.get('id')} has purged booking ID: {booking.id}")
+
+    db.delete(booking)
     db.commit()
 
-
-# ==============================================================================
-# TRANSPORT RESERVATIONS SECTION
-# ==============================================================================
-
-@router.post("/transport", response_model=booking_schemas.TransportBookingResponse, status_code=status.HTTP_201_CREATED)
-def book_travel_transport(booking_request: booking_schemas.TransportBookingCreate, db: db_dependency,
-                          current_user: user_dependency):
-    """
-    Books vehicles or local coaster transport across Pakistan and fires an automated vendor email alert.
-    """
-    if booking_request.departure_date < date.today():
-        raise HTTPException(status_code=400, detail="Departure travel date cannot match historical timelines.")
-
-    db_booking = TransportBookings(
-        **booking_request.model_dump(),
-        user_id=current_user.get("id")
-    )
-    db.add(db_booking)
-    db.commit()
-    db.refresh(db_booking)
-
-    send_transport_booking_email(
-        booking_id=db_booking.id,
-        transport_type=db_booking.transport_type,
-        departure=db_booking.departure_date,
-        source=db_booking.source_city,
-        destination=db_booking.destination_city,
-        total_price=db_booking.total_price,
-        customer_email=current_user.get("email")
-    )
-
-    return db_booking
-
-
-@router.get("/transport/history", response_model=List[booking_schemas.TransportBookingResponse],
-            status_code=status.HTTP_200_OK)
-def get_user_transport_booking_history(db: db_dependency, current_user: user_dependency):
-    """
-    Retrieves the entire vehicle transport routing historical log for the traveler.
-    """
-    bookings = db.query(TransportBookings).filter(TransportBookings.user_id == current_user.get("id")).all()
-    return bookings
-
-
-@router.put("/transport/{booking_id}", response_model=booking_schemas.TransportBookingResponse,
-            status_code=status.HTTP_200_OK)
-def update_transit_logistics_reservation(booking_id: int, booking_request: booking_schemas.TransportBookingUpdate,
-                                         db: db_dependency, current_user: user_dependency):
-    """
-    Modifies travel parameters or routes dynamically for an active fleet tracking row.
-    """
-    db_booking = db.query(TransportBookings).filter(TransportBookings.id == booking_id).first()
-    if not db_booking:
-        raise HTTPException(status_code=404, detail="Transit logistics reservation record item not found.")
-
-    if db_booking.user_id != current_user.get("id"):
-        raise HTTPException(status_code=403, detail="Adequate reservation ownership parameters missing.")
-
-    incoming_data = booking_request.model_dump(exclude_unset=True)
-
-    if "departure_date" in incoming_data and incoming_data.get("departure_date") < date.today():
-        raise HTTPException(status_code=400, detail="Cannot alter departure schedules into historical timelines.")
-
-    for key, value in incoming_data.items():
-        setattr(db_booking, key, value)
-
-    db.commit()
-    db.refresh(db_booking)
-
-    send_transport_booking_email(
-        booking_id=db_booking.id,
-        transport_type=db_booking.transport_type,
-        departure=db_booking.departure_date,
-        source=db_booking.source_city,
-        destination=db_booking.destination_city,
-        total_price=db_booking.total_price,
-        customer_email=current_user.get("email")
-    )
-
-    return db_booking
-
-
-@router.delete("/transport/{booking_id}", status_code=status.HTTP_204_NO_CONTENT)
-def cancel_transport_booking(booking_id: int, db: db_dependency, current_user: user_dependency):
-    """
-    Permanently cancels a transport booking and drops it from the database log.
-    """
-    db_booking = db.query(TransportBookings).filter(TransportBookings.id == booking_id).first()
-    if not db_booking:
-        raise HTTPException(status_code=404, detail="Transit logistics reservation record item not found.")
-
-    if db_booking.user_id != current_user.get("id"):
-        raise HTTPException(status_code=403, detail="Adequate reservation ownership parameters missing.")
-
-    db.delete(db_booking)
-    db.commit()
+    return {"message": f"Success. Reservation ledger block reference ID '{booking_id}' permanently dropped."}

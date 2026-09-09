@@ -2,7 +2,7 @@ from sqlalchemy.orm import sessionmaker
 from database import engine
 from datetime import datetime, timedelta
 
-# Force all synchronized models into memory to prevent mapping setup crashes
+# Force all synchronized models into memory to prevent mapping setup crashes at script startup
 from models.user import Users
 from models.location import Locations, LocationStatusEnum
 from models.category import Categories, CategoryStatusEnum
@@ -11,6 +11,7 @@ from models.hotel import Hotels, HotelRooms, HotelStatusEnum, RoomStatusEnum
 from models.restaurant import Restaurants, RestaurantStatusEnum
 from models.review import Reviews, ReviewStatusEnum
 from models.tour_package import TourPackages, PackageStatusEnum
+from models.transport import Transports, TransportStatusEnum
 from models.image import Images, ImageResourceTypeEnum
 
 # Set up the session connection factory
@@ -63,7 +64,6 @@ def seed_safardost_master_data():
                 creator_id=admin_id
             )
             db.add(lakes_cat)
-            print("[+] Category 'Lakes' injected successfully.")
 
         hotels_cat = db.query(Categories).filter(Categories.name == "Hotels").first()
         if not hotels_cat:
@@ -74,7 +74,6 @@ def seed_safardost_master_data():
                 creator_id=admin_id
             )
             db.add(hotels_cat)
-            print("[+] Category 'Hotels' injected successfully.")
 
         rest_cat = db.query(Categories).filter(Categories.name == "Restaurants").first()
         if not rest_cat:
@@ -85,12 +84,12 @@ def seed_safardost_master_data():
                 creator_id=admin_id
             )
             db.add(rest_cat)
-            print("[+] Category 'Restaurants' injected successfully.")
 
         db.commit()
         db.refresh(lakes_cat)
         db.refresh(hotels_cat)
         db.refresh(rest_cat)
+        print("[+] Base taxonomy lookup categories synchronized successfully.")
 
         # ==========================================
         # 3. SEED TOURIST PLACES
@@ -141,7 +140,7 @@ def seed_safardost_master_data():
             db.commit()
             db.refresh(luxus_hunza)
 
-            # Seed Rooms inside Hotel
+            # Seed Rooms inside Hotel [INDEX: 0.1.11]
             room1 = HotelRooms(hotel_id=luxus_hunza.id, room_type="Deluxe Lake View Suite",
                                description="King bed, floor-to-ceiling glass windows facing the lake.",
                                price_per_night=25000.0, capacity=2, status=RoomStatusEnum.available)
@@ -229,7 +228,7 @@ def seed_safardost_master_data():
                 creator_id=admin_id
             )
 
-            # 🏛️ RELATIONAL MANY-TO-MANY APPENDS: Binds actual model entries straight into your association schema bridge arrays!
+            # 🏛️ RELATIONAL MANY-TO-MANY APPENDS: Binds actual model entries straight into your association schema bridge arrays! [INDEX: 0.1.27]
             hunza_tour.places.append(attabad)
             hunza_tour.hotels.append(luxus_hunza)
 
@@ -241,6 +240,37 @@ def seed_safardost_master_data():
             db.add(Images(image_url="https://cloudinary.com", resource_type=ImageResourceTypeEnum.tour_package,
                           resource_id=hunza_tour.id, creator_id=admin_id))
             print("[+] Predefined Tour Package '5-Day Luxury Hunza Escape' mapped and seeded successfully.")
+
+        # ==========================================
+        # 8. SEED TRANSPORTS
+        # ==========================================
+        print("[-] Seeding transport fleet routes and vehicle profiles...")
+        prado_jeep = db.query(Transports).filter(Transports.transport_type == "4x4 Toyota Prado Jeep").first()
+        if not prado_jeep:
+            prado_jeep = Transports(
+                transport_type="4x4 Toyota Prado Jeep",
+                from_location="Karimabad",
+                to_location="Attabad Lake / Passu Cones",
+                departure_time="Flexible Departure (Available on Demand)",
+                arrival_time="1.5 Hours approximate transit time",
+                price=8000.0,
+                capacity=4,
+                status=TransportStatusEnum.active,
+                location_id=hunza.id,
+                creator_id=admin_id
+            )
+            db.add(prado_jeep)
+            db.commit()
+            db.refresh(prado_jeep)
+
+            # Polymorphic Image for Transport Asset
+            db.add(Images(
+                image_url="https://cloudinary.com",
+                resource_type=ImageResourceTypeEnum.transport,
+                resource_id=prado_jeep.id,
+                creator_id=admin_id
+            ))
+            print("[+] Transport fleet asset '4x4 Toyota Prado Jeep' seeded successfully.")
 
         db.commit()
         print("\n[***] ALL MASTER ARCHITECTURE TESTING DATA SEEDS APPLIED SUCCESSFULLY! [***]")

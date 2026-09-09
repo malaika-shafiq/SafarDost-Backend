@@ -7,6 +7,10 @@ from models.category import Categories
 from models.place import Places
 from models.image import Images
 from models.tour_package import TourPackages
+from models.review import Reviews
+from models.transport import Transports
+from models.hotel import Hotels
+from models.restaurant import Restaurants
 
 
 def rebuild_database():

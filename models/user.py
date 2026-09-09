@@ -52,6 +52,5 @@ class Users(Base):
     created_hotels = relationship("Hotels", foreign_keys="[Hotels.creator_id]", back_populates="creator")
 
     # 🏛️ BILATERAL ALIGNMENT: Perfectly mirrors your booking module relationship definitions
-    bookings = relationship("HotelBookings", back_populates="user")
-    restaurant_bookings = relationship("RestaurantBookings", back_populates="user")
-    transport_bookings = relationship("TransportBookings", back_populates="user")
+    bookings = relationship("Bookings", back_populates="user", cascade="all, delete-orphan")
+

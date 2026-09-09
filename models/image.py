@@ -12,6 +12,7 @@ class ImageResourceTypeEnum(str, enum.Enum):
     restaurant = "restaurant"
     review = "review"
     tour_package = "tour_package"
+    transport = "transport"
 
 
 class Images(Base):

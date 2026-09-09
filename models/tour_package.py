@@ -76,3 +76,6 @@ class TourPackages(Base):
     # The 'secondary' parameter handles the linking ledger operations behind the scenes automatically!
     places = relationship("Places", secondary=package_places_association, backref="tour_packages")
     hotels = relationship("Hotels", secondary=package_hotels_association, backref="tour_packages")
+
+    # Inside models/tour_package.py
+    bookings = relationship("TourBookings", back_populates="package", cascade="all, delete-orphan")

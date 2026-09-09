@@ -37,6 +37,7 @@ class Locations(Base):
     hotels = relationship("Hotels", back_populates="location")
     restaurants = relationship("Restaurants", back_populates="location")
     tour_packages = relationship("TourPackages", back_populates="location")
+    transports = relationship("Transports", back_populates="location")
 
     # Inside models/location.py — Update your creator relationship line to match this:
     creator = relationship("Users", foreign_keys="[Locations.creator_id]")
