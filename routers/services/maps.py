@@ -19,7 +19,7 @@ user_dependency = Annotated[dict, Depends(get_current_user)]
 # Fetch the raw key from cloud parameters environment
 RAW_MAPS_KEY = os.getenv("GOOGLE_MAPS_API_KEY")
 
-# FIXED: Deep sanitize whitespace/newlines right at startup to prevent 404 URL breaks
+# Deep sanitize whitespace/newlines right at startup to prevent 404 URL breaks
 if RAW_MAPS_KEY:
     GOOGLE_MAPS_KEY = RAW_MAPS_KEY.replace("\n", "").replace("\r", "").strip().replace('"', '').replace("'", "")
 else:
@@ -33,9 +33,9 @@ def clean_address_string(text: str) -> str:
     return " ".join(word.capitalize() for word in cleaned.split())
 
 
-# ========================================================
-# ADDRESS GEOCODING ENDPOINT (CONVERTS TEXT TO GPS COORDINATES)
-# ========================================================
+# =====================================================================
+# 1. ADDRESS GEOCODING ENDPOINT (CONVERTS TEXT TO GPS COORDINATES)
+# =====================================================================
 @router.get("/geocode", response_model=CoordinateResponse, status_code=status.HTTP_200_OK)
 def get_location_coordinates(address: str, current_user: user_dependency):
     """
@@ -78,12 +78,11 @@ def get_location_coordinates(address: str, current_user: user_dependency):
 
         with urllib.request.urlopen(req, timeout=10.0) as response:
             parsed_json = json.loads(response.read().decode("utf-8"))
-
             api_status = parsed_json.get("status")
 
             if api_status == "OK" and parsed_json.get("results"):
-                # FIXED: Extract index object 0 from the matching payload results array
-                first_result = parsed_json["results"]
+                # ✅ FIXED CRASH: Extract the 0-index dictionary object safely out of the results array list
+                first_result = parsed_json["results"][0]
                 location_node = first_result["geometry"]["location"]
                 formatted_name = first_result["formatted_address"]
 
@@ -114,9 +113,9 @@ def get_location_coordinates(address: str, current_user: user_dependency):
         )
 
 
-# ========================================================
-# DIRECTIONS DISTANCE ENGINE ENDPOINT (CALCULATES TRAVEL TIME)
-# ========================================================
+# =====================================================================
+# 2. DIRECTIONS DISTANCE ENGINE ENDPOINT (CALCULATES TRAVEL TIME)
+# =====================================================================
 @router.post("/distance", response_model=RouteDistanceResponse, status_code=status.HTTP_200_OK)
 def calculate_route_distance(payload: RouteDistanceInput, current_user: user_dependency):
     """
@@ -124,8 +123,7 @@ def calculate_route_distance(payload: RouteDistanceInput, current_user: user_dep
     to analyze distances and live estimated travel timelines between travel hubs.
     """
     user_id = current_user.get("id")
-    logger.info(
-        f"User ID {user_id} executing distance calculation routing from '{payload.origin}' to '{payload.destination}'")
+    logger.info(f"User ID {user_id} executing distance calculation routing from '{payload.origin}' to '{payload.destination}'")
 
     clean_origin = clean_address_string(payload.origin)
     clean_dest = clean_address_string(payload.destination)
@@ -137,7 +135,9 @@ def calculate_route_distance(payload: RouteDistanceInput, current_user: user_dep
             origin=clean_origin,
             destination=clean_dest,
             distance_text="374 km",
-            duration_text="4 hours 30 mins via M-2 Motorway"
+            distance_value_meters=374000,
+            duration_text="4 hours 30 mins via M-2 Motorway",
+            duration_value_seconds=16200
         )
 
     BASE_URL = "https://maps.googleapis.com/maps/api/directions/json"
@@ -154,19 +154,20 @@ def calculate_route_distance(payload: RouteDistanceInput, current_user: user_dep
 
         with urllib.request.urlopen(req, timeout=10.0) as response:
             parsed_json = json.loads(response.read().decode("utf-8"))
-
             api_status = parsed_json.get("status")
 
             if api_status == "OK" and parsed_json.get("routes"):
-                # FIXED: Extract index object 0 from the routes and legs payload arrays
-                first_route = parsed_json["routes"]
-                first_leg = first_route["legs"]
+                # ✅ FIXED CRASH: Extract the 0-index object tracking parameters from both nested array loops cleanly
+                first_route = parsed_json["routes"][0]
+                first_leg = first_route["legs"][0]
 
                 return RouteDistanceResponse(
                     origin=first_leg["start_address"],
                     destination=first_leg["end_address"],
                     distance_text=first_leg["distance"]["text"],
-                    duration_text=first_leg["duration"]["text"]
+                    distance_value_meters=int(first_leg["distance"]["value"]),
+                    duration_text=first_leg["duration"]["text"],
+                    duration_value_seconds=int(first_leg["duration"]["value"])
                 )
 
             raise HTTPException(
