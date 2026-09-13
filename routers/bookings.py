@@ -2,19 +2,19 @@ import math
 from datetime import datetime
 from typing import Annotated, Optional
 from fastapi import APIRouter, Depends, HTTPException, status, Query
-from sqlalchemy import desc
+from sqlalchemy import desc, func
 from sqlalchemy.orm import Session, joinedload
 from database import get_db
 
-# Model and Schema Cross-Imports — ALL ACTIVATED
+# Model and Schema Cross-Imports
 from models.booking import Bookings, HotelBookings, RestaurantBookings, TransportBookings, TourBookings
 from models.booking import BookingTypeEnum, BookingStatusEnum, PaymentStatusEnum
-from models.hotel import Hotels, HotelRooms, RoomStatusEnum
+from models.hotel import Hotels, HotelRooms
 from models.restaurant import Restaurants
 from models.transport import Transports, TransportStatusEnum
 from models.tour_package import TourPackages, PackageStatusEnum
 from schemas.booking_schemas import BookingCreate, BookingResponse
-from utils.auth_utils import get_current_user  # 🔒 Security Gate Dependency
+from utils.auth_utils import get_current_user
 
 router = APIRouter(prefix="/bookings", tags=["Polymorphic Booking & Checkout System"])
 
@@ -22,9 +22,6 @@ db_dependency = Annotated[Session, Depends(get_db)]
 user_dependency = Annotated[dict, Depends(get_current_user)]
 
 
-# ==========================================
-# 1. READ ALL BOOKINGS (With Advanced Multi-Role Filter Scopes)
-# ==========================================
 @router.get("", status_code=status.HTTP_200_OK)
 def get_all_bookings_paginated(
         db: db_dependency,
@@ -34,10 +31,7 @@ def get_all_bookings_paginated(
         booking_type: Optional[BookingTypeEnum] = Query(None, description="Filter by booking type context"),
         booking_status: Optional[BookingStatusEnum] = Query(None, description="Filter by transaction status")
 ):
-    """
-    ROLE DUAL ACCESS: Travelers see only their own histories. 
-    Administrators possess global visibility over the entire ecosystem matrix layout.
-    """
+    """Dual-Role Pagination Fetch: Admin sees everything, travelers see their own history."""
     query = db.query(Bookings).options(
         joinedload(Bookings.hotel_details),
         joinedload(Bookings.restaurant_details),
@@ -45,11 +39,9 @@ def get_all_bookings_paginated(
         joinedload(Bookings.tour_details)
     )
 
-    # 🔒 MULTI-ROLE SECURITY FILTER ENFORCEMENT
     if current_user.get("role") != "admin":
         query = query.filter(Bookings.user_id == current_user.get("id"))
 
-    # Apply Segment Filter Constraints
     if booking_type:
         query = query.filter(Bookings.booking_type == booking_type)
     if booking_status:
@@ -71,20 +63,13 @@ def get_all_bookings_paginated(
     }
 
 
-# ==========================================
-# 2. CREATE A NEW POLYMORPHIC BOOKING (🔒 Authenticated Users)
-# ==========================================
 @router.post("", response_model=BookingResponse, status_code=status.HTTP_201_CREATED)
 def create_transaction_booking(
         booking_request: BookingCreate,
         current_user: user_dependency,
         db: db_dependency
 ):
-    """
-    TRAVELER CHECKOUT GATEWAY: Routes transactional calculations based on the domain layout choice.
-    Validates capacity metrics, subtracts slots, and saves master records seamlessly.
-    """
-    # 1. Initialize Parent Master Transaction Shell (Option B Contacts + CNIC fields live)
+    """ Dynamic polymorphic checkout interface with strict inventory stock checks. """
     db_master = Bookings(
         user_id=current_user.get("id"),
         booking_type=booking_request.booking_type,
@@ -95,14 +80,13 @@ def create_transaction_booking(
         special_requests=booking_request.special_requests,
         booking_status=BookingStatusEnum.pending,
         payment_status=PaymentStatusEnum.pending,
-        total_amount=0.0  # Calculated dynamically below
+        total_amount=0.0
     )
-
     db.add(db_master)
-    db.flush()  # Flushes master transaction shell to securely pull a transient ID record
+    db.flush()
 
     # ==========================================
-    # A. SUB-ROUTING WORKFLOW: HOTEL STAY SELECTION
+    # A. UPDATED SUB-ROUTING WORKFLOW: HOTEL INVENTORY QUANTITY CHECK
     # ==========================================
     if booking_request.booking_type == BookingTypeEnum.hotel:
         details = booking_request.hotel_details
@@ -110,19 +94,34 @@ def create_transaction_booking(
             raise HTTPException(status_code=400, detail="Missing required 'hotel_details' payload block.")
 
         target_room = db.query(HotelRooms).filter(
-            HotelRooms.id == details.room_id, 
+            HotelRooms.id == details.room_id,
             HotelRooms.hotel_id == details.hotel_id
         ).first()
 
-        if not target_room or target_room.status != RoomStatusEnum.available:
-            raise HTTPException(status_code=400, detail="The requested room type selection is currently unavailable.")
+        if not target_room:
+            raise HTTPException(status_code=404, detail="The requested room type classification was not found.")
 
-        # 🏎️ TIME CALCULATOR ENGINE: Compares dates to pull the total stay length automatically
+        # 📅 OVERLAPPING OCCUPANCY ALGORITHM
+        # Sums up all currently reserved rooms of this type where dates intersect with the requested stay
+        booked_rooms_sum = db.query(func.sum(HotelBookings.number_of_rooms)).join(Bookings).filter(
+            HotelBookings.room_id == details.room_id,
+            Bookings.booking_status == BookingStatusEnum.confirmed,
+            HotelBookings.check_out > details.check_in,
+            HotelBookings.check_in < details.check_out
+        ).scalar() or 0
+
+        # Check if the remaining stock can accommodate the new checkout request
+        if (booked_rooms_sum + details.number_of_rooms) > target_room.quantity:
+            rooms_left = max(0, target_room.quantity - booked_rooms_sum)
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Inventory Shortage: Only {rooms_left} units of '{target_room.room_type}' left for these dates."
+            )
+
         nights = (details.check_out - details.check_in).days
         if nights <= 0:
             raise HTTPException(status_code=400, detail="Invalid date matrix setup: Check-out must exceed Check-in.")
 
-        # Total Price = Room Price × Nights × Number of Rooms
         db_master.total_amount = target_room.price_per_night * nights * details.number_of_rooms
 
         db_child = HotelBookings(
@@ -139,16 +138,14 @@ def create_transaction_booking(
         db.add(db_child)
 
     # ==========================================
-    # B. SUB-ROUTING WORKFLOW: RESTAURANT RESERVATION
+    # B. RESTAURANT BRANCH
     # ==========================================
     elif booking_request.booking_type == BookingTypeEnum.restaurant:
         details = booking_request.restaurant_details
         if not details:
             raise HTTPException(status_code=400, detail="Missing required 'restaurant_details' payload block.")
 
-        # Restaurant reservations use a zero-based base amount model since bills are paid post-dining
         db_master.total_amount = 0.0
-
         db_child = RestaurantBookings(
             booking_id=db_master.id,
             restaurant_id=details.restaurant_id,
@@ -161,26 +158,21 @@ def create_transaction_booking(
         db.add(db_child)
 
     # ==========================================
-    # C. SUB-ROUTING WORKFLOW: TRANSPORT FLEET SELECTION
+    # C. TRANSPORT BRANCH
     # ==========================================
     elif booking_request.booking_type == BookingTypeEnum.transport:
         details = booking_request.transport_details
         if not details:
             raise HTTPException(status_code=400, detail="Missing required 'transport_details' payload block.")
 
-        vehicle = db.query(Transports).filter(
-            Transports.id == details.transport_id, 
-            Transports.status == TransportStatusEnum.active
-        ).first()
-
+        vehicle = db.query(Transports).filter(Transports.id == details.transport_id, Transports.status == TransportStatusEnum.active).first()
         if not vehicle:
-            raise HTTPException(status_code=400, detail="Target vehicle fleet profile is currently offline.")
+            raise HTTPException(status_code=400, detail="Target vehicle profile is offline.")
 
         if vehicle.capacity < (details.adults + details.children):
-            raise HTTPException(status_code=400, detail="Seating Capacity Overflow: Selected fleet model seats are full.")
+            raise HTTPException(status_code=400, detail="Seating Capacity Overflow.")
 
         db_master.total_amount = vehicle.price
-
         db_child = TransportBookings(
             booking_id=db_master.id,
             transport_id=details.transport_id,
@@ -196,28 +188,21 @@ def create_transaction_booking(
         db.add(db_child)
 
     # ==========================================
-    # D. SUB-ROUTING WORKFLOW: PREDEFINED TOUR GROUP PACKAGE
+    # D. TOUR BUNDLE BRANCH
     # ==========================================
     elif booking_request.booking_type == BookingTypeEnum.tour:
         details = booking_request.tour_details
         if not details:
             raise HTTPException(status_code=400, detail="Missing required 'tour_details' payload block.")
 
-        package = db.query(TourPackages).filter(
-            TourPackages.id == details.package_id, 
-            TourPackages.status == PackageStatusEnum.active
-        ).first()
-
+        package = db.query(TourPackages).filter(TourPackages.id == details.package_id, TourPackages.status == PackageStatusEnum.active).first()
         if not package:
-            raise HTTPException(status_code=400, detail="Target holiday tour package is currently offline.")
+            raise HTTPException(status_code=400, detail="Target tour package is offline.")
 
         if package.available_slots < details.number_of_travelers:
-            raise HTTPException(status_code=400, detail="Booking Failure: Insufficient tour slots left.")
+            raise HTTPException(status_code=400, detail="Insufficient seats left.")
 
-        # 📉 SLOT ACCUMULATION ENGINE: Deduct seats instantly to secure the spots
         package.available_slots -= details.number_of_travelers
-
-        # Total Price = Package Base Rate × Passenger Tickets Count
         db_master.total_amount = package.price * details.number_of_travelers
 
         db_child = TourBookings(
@@ -244,10 +229,7 @@ def get_individual_booking_by_id(
         current_user: user_dependency,
         db: db_dependency
 ):
-    """
-    ROLE DUAL ACCESS: Fetch complete transaction metrics and nested sub-domain layout logs.
-    Restricts travelers strictly to their own rows while allowing Admins complete master visibility.
-    """
+    """ Single Ledger Profile View. Enforces absolute user access security boundaries. """
     booking = db.query(Bookings).options(
         joinedload(Bookings.hotel_details),
         joinedload(Bookings.restaurant_details),
@@ -258,7 +240,6 @@ def get_individual_booking_by_id(
     if not booking:
         raise HTTPException(status_code=404, detail="Target transaction booking record not found.")
 
-    # 🔒 ROLE ACCESS SECURITY CONSTRAINT GATE
     if current_user.get("role") != "admin" and booking.user_id != current_user.get("id"):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -269,7 +250,7 @@ def get_individual_booking_by_id(
 
 
 # ==========================================
-# 4. MODERATE STATUS APPROVALS/REJECTIONS (🔒 Admin Only Gate)
+# 4. MODERATE STATUS APPROVALS/REJECTIONS (🔒 Admin Only)
 # ==========================================
 @router.patch("/{booking_id}/status", response_model=BookingResponse, status_code=status.HTTP_200_OK)
 def moderate_booking_status_override(
@@ -280,10 +261,9 @@ def moderate_booking_status_override(
         db: db_dependency
 ):
     """
-    ADMIN ONLY: Approve, Confirm, or Reject active transactional entries cleanly (Section 14 & 16) [INDEX: 0.1.24, 0.1.28].
-    Natively triggers safe inventory room status releases or vehicle seat slot reversals upon rejections.
+    ADMIN ONLY: Overrides system transaction states.
+    Automatically refunds seat slot allocations to tour packages upon cancellation/rejection.
     """
-    # 🔒 ROLE ACCESS CHECK GATE
     if current_user.get("role") != "admin":
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -294,26 +274,20 @@ def moderate_booking_status_override(
     if not booking:
         raise HTTPException(status_code=404, detail="Target transaction booking record not found.")
 
-    # 🚨 INVENTORY STATE REVERSAL HANDLING ON REJECTIONS/CANCELLATIONS
+    # 🚨 INVENTORY REFUND ENGINE
     if new_status in [BookingStatusEnum.rejected,
                       BookingStatusEnum.cancelled] and booking.booking_status == BookingStatusEnum.pending:
 
-        # Scenario A: Releasing an active group holiday package slot allocation [INDEX: 0.1.28]
+        # Scenario A: Refund group tour package seat assignments instantly
         if booking.booking_type == BookingTypeEnum.tour and booking.tour_details:
             package = db.query(TourPackages).filter(TourPackages.id == booking.tour_details.package_id).first()
             if package:
-                # Refund seats back into the available pool natively
                 package.available_slots += booking.tour_details.number_of_travelers
                 db.add(package)
 
-        # Scenario B: Flipping a hotel room state back to available if the request fails [INDEX: 0.1.26]
-        elif booking.booking_type == BookingTypeEnum.hotel and booking.hotel_details:
-            room = db.query(HotelRooms).filter(HotelRooms.id == booking.hotel_details.room_id).first()
-            if room:
-                room.status = RoomStatusEnum.available
-                db.add(room)
+        # Note: Hotel room capacity updates require zero status resets now,
+        # since rooms are released back into the date pool automatically when the status shifts!
 
-    # Apply overridden validation indicators safely
     booking.booking_status = new_status
     booking.payment_status = new_payment
 
@@ -324,7 +298,7 @@ def moderate_booking_status_override(
 
 
 # ==========================================
-# 5. REMOVE / PURGE A RECORD LEDGER (🔒 Admin Only Gate)
+# 5. REMOVE / PURGE A RECORD LEDGER (🔒 Admin Only)
 # ==========================================
 @router.delete("/{booking_id}", status_code=status.HTTP_200_OK)
 def delete_historical_booking_record(
@@ -332,11 +306,7 @@ def delete_historical_booking_record(
         current_user: user_dependency,
         db: db_dependency
 ):
-    """
-    ADMIN ONLY: Hard purge operation. Removes transaction entries from disk table lines.
-    Cascades down beautifully to clean out child details blocks with zero loose rows left.
-    """
-    # 🔒 ROLE ACCESS CHECK GATE
+    """ ADMIN ONLY: Hard purge operation. Wipes transactional rows from disk. """
     if current_user.get("role") != "admin":
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -347,10 +317,8 @@ def delete_historical_booking_record(
     if not booking:
         raise HTTPException(status_code=404, detail="Target tracking reservation code not found.")
 
-    # 🏛️ AUDIT TRAIL TERMINAL LOGGING: Uses variable data payloads directly to clear warnings!
     print(f"[SECURITY CHECKOUT AUDIT] Admin ID {current_user.get('id')} has purged booking ID: {booking.id}")
 
     db.delete(booking)
     db.commit()
-
     return {"message": f"Success. Reservation ledger block reference ID '{booking_id}' permanently dropped."}

@@ -1,31 +1,37 @@
 from pydantic import BaseModel, ConfigDict, Field
 from datetime import datetime
 from typing import Optional, List
-from models.hotel import HotelStatusEnum, RoomStatusEnum
+from models.hotel import HotelStatusEnum
 
 
 # ==========================================
-# 🏢 ROOM INVENTORY VALUATION SCHEMAS
+# 🏢 ROOM INVENTORY CATEGORY SCHEMAS
 # ==========================================
 class RoomCreate(BaseModel):
-    """ Validates individual room records passed inside the parent hotel initialization body. """
+    """ Validates custom room groups embedded inside the hotel registration payload. """
     room_type: str = Field(..., min_length=2, max_length=100, description="e.g., Deluxe Suite, Standard Twin")
-    description: Optional[str] = Field(None, description="Balcony details, bed configuration, or scenery descriptions")
-    price_per_night: float = Field(..., gt=0, description="Nightly charge rate requirement string value")
-    capacity: int = Field(2, ge=1, description="Maximum sleep occupant limits per night")
+    description: Optional[str] = Field(None, description="Balcony details, bed configurations, or landscape views")
+    price_per_night: float = Field(..., gt=0, description="Nightly charge rate baseline currency metric")
+    capacity: int = Field(2, ge=1, description="Maximum sleep occupant limits per unit")
+    quantity: int = Field(1, ge=1, description="Total active room supply stock count for this category")
 
 
 class RoomResponse(BaseModel):
-    """ Shapes individual room data attributes sent back out across the network. """
+    """ Shapes custom room group structures sent back to your UI panels. """
     id: int
     hotel_id: int
     room_type: str
     description: Optional[str]
     price_per_night: float
     capacity: int
-    status: RoomStatusEnum
+    quantity: int
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class RoomQuantityUpdate(BaseModel):
+    """ [NEW] Option 1: Validates a direct standalone adjustment to room stock metrics. """
+    quantity: int = Field(..., ge=0, description="The newly updated total available stock count")
 
 
 # ==========================================
@@ -33,29 +39,27 @@ class RoomResponse(BaseModel):
 # ==========================================
 class HotelCreate(BaseModel):
     """
-    Validates incoming hotel payload blocks sent from the administrative dashboard panel.
-    Captures polymorphic picture URLs and nested room inventories in a single network request.
+    Validates incoming hotel payloads from the administrative panel.
+    Captures multi-image arrays and nested room type batches in a single operation.
     """
     name: str = Field(..., min_length=2, max_length=150, description="The official name of the hotel property")
     description: str = Field(..., min_length=10, description="Deep property summary overview text context")
     contact_information: str = Field(..., min_length=5, max_length=100, description="Phone lines or desk numbers")
-    facilities: Optional[str] = Field(None,
-                                      description="Comma-separated amenity string list, e.g., WiFi, AC, Parking, Heater")
+    facilities: Optional[str] = Field(None, description="Comma-separated amenity list, e.g., WiFi, AC, Parking, Heater")
 
-    # 🖼️ MULTI-IMAGE HANDLER ARRAY (Follows your exact unified polymorphic pattern)
-    images: List[str] = Field(..., min_length=1, description="Array containing hosted landscape media file URL strings")
+    # Unified polymorphic media handler array
+    images: List[str] = Field(..., min_length=1, description="Hosted landscape media file URL strings")
 
-    # 🏠 DATABASE FOREIGN KEYS
+    # Database relational foreign key indicators
     location_id: int = Field(..., description="The matching master entry ID inside locations table")
     category_id: int = Field(..., description="The matching master entry ID inside categories table")
 
-    # 🗂️ NESTED INVENTORY ARRIVAL ARRAY
-    rooms: List[RoomCreate] = Field(..., min_length=1,
-                                    description="List tracking structural room configurations to onboard")
+    # Nested inventory array (Admin defines custom rooms and quantities here)
+    rooms: List[RoomCreate] = Field(..., min_length=1, description="List tracking structural room types and stock levels to onboard")
 
 
 class HotelUpdate(BaseModel):
-    """ Handles partial properties metadata overrides cleanly via admin control screens. """
+    """ Handles partial properties metadata overrides via admin control screens. """
     name: Optional[str] = None
     description: Optional[str] = None
     contact_information: Optional[str] = None
@@ -66,7 +70,7 @@ class HotelUpdate(BaseModel):
 
 
 class HotelResponse(BaseModel):
-    """ Shapes the structured base hotel payload returned to tracking list views. """
+    """ Shapes the base hotel core data returned to global tracking feeds. """
     id: int
     name: str
     description: str
@@ -76,17 +80,17 @@ class HotelResponse(BaseModel):
 
     location_id: int
     category_id: int
-    creator_id: int  # Tracks administrative creation accountability paths
-    updated_by: Optional[int]  # Tracks administrative update accountability paths
+    creator_id: int
+    updated_by: Optional[int]
 
     created_at: datetime
     updated_at: datetime
 
-    model_config = ConfigDict(from_attributes=True)  # 👈 Modern Pydantic v2 standard binding
+    model_config = ConfigDict(from_attributes=True)
 
 
 class HotelDetailResponse(BaseModel):
-    """ Advanced nested payload data contract custom-tailored to feed your traveler app profile pages. """
+    """ Advanced nested data structure tailored to feed mobile traveler app profile screens. """
     hotel: HotelResponse
     images: List[str] = Field(default=[], description="Unfolded media storage URL link arrays")
-    rooms: List[RoomResponse] = Field(default=[], description="Unfolded child room options inventory lists")
+    rooms: List[RoomResponse] = Field(default=[], description="Unfolded child room categories stock inventories")

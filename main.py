@@ -12,6 +12,7 @@ from routers.categories import router as categories_router
 from routers.locations import router as locations_router
 from routers.reviews import router as reviews_router
 from routers.bookings import router as bookings_router
+from routers.user_trips import router as user_trips_router
 
 # 2. Direct specific imports from the services subfolder
 from routers.services.weather import router as weather_router
@@ -54,6 +55,7 @@ app.include_router(categories_router)
 app.include_router(locations_router)
 app.include_router(reviews_router)
 app.include_router(bookings_router)
+app.include_router(user_trips_router)
 app.include_router(weather_router)
 app.include_router(ai_chat_router)
 app.include_router(trips_planner_router)

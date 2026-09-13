@@ -7,12 +7,13 @@ from models.user import Users
 from models.location import Locations, LocationStatusEnum
 from models.category import Categories, CategoryStatusEnum
 from models.place import Places, PlaceStatusEnum
-from models.hotel import Hotels, HotelRooms, HotelStatusEnum, RoomStatusEnum
+from models.hotel import Hotels, HotelRooms, HotelStatusEnum
 from models.restaurant import Restaurants, RestaurantStatusEnum
 from models.review import Reviews, ReviewStatusEnum
 from models.tour_package import TourPackages, PackageStatusEnum
 from models.transport import Transports, TransportStatusEnum
 from models.image import Images, ImageResourceTypeEnum
+from models.user_trip import UserTrips, TripScopeEnum
 
 # Set up the session connection factory
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
@@ -121,9 +122,9 @@ def seed_safardost_master_data():
             print("[+] Tourist Place 'Attabad Lake' injected successfully.")
 
         # ==========================================
-        # 4. SEED HOTELS & ROOMS
+        # 4. SEED HOTELS & QUANTITATIVE ROOM INVENTORY
         # ==========================================
-        print("[-] Seeding hotel marketplace properties and room inventory...")
+        print("[-] Seeding hotel marketplace properties and room inventory stocks...")
         luxus_hunza = db.query(Hotels).filter(Hotels.name == "Luxus Hunza").first()
         if not luxus_hunza:
             luxus_hunza = Hotels(
@@ -140,19 +141,19 @@ def seed_safardost_master_data():
             db.commit()
             db.refresh(luxus_hunza)
 
-            # Seed Rooms inside Hotel [INDEX: 0.1.11]
+            # ✅ ALIGNED TO QUANTITY METRICS MODEL: Injects baseline stock numbers cleanly
             room1 = HotelRooms(hotel_id=luxus_hunza.id, room_type="Deluxe Lake View Suite",
                                description="King bed, floor-to-ceiling glass windows facing the lake.",
-                               price_per_night=25000.0, capacity=2, status=RoomStatusEnum.available)
+                               price_per_night=25000.0, capacity=2, quantity=5)
             room2 = HotelRooms(hotel_id=luxus_hunza.id, room_type="Luxury Family Room",
                                description="Two queen beds, attached dynamic living area space.",
-                               price_per_night=40000.0, capacity=4, status=RoomStatusEnum.available)
+                               price_per_night=40000.0, capacity=4, quantity=2)
             db.add_all([room1, room2])
 
             # Polymorphic Image for Hotel
             db.add(Images(image_url="https://cloudinary.com", resource_type=ImageResourceTypeEnum.hotel,
                           resource_id=luxus_hunza.id, creator_id=admin_id))
-            print("[+] Hotel 'Luxus Hunza' and nested rooms initialized successfully.")
+            print("[+] Hotel 'Luxus Hunza' and nested stock-inventory rooms initialized successfully.")
 
         # ==========================================
         # 5. SEED RESTAURANTS
@@ -228,7 +229,6 @@ def seed_safardost_master_data():
                 creator_id=admin_id
             )
 
-            # 🏛️ RELATIONAL MANY-TO-MANY APPENDS: Binds actual model entries straight into your association schema bridge arrays! [INDEX: 0.1.27]
             hunza_tour.places.append(attabad)
             hunza_tour.hotels.append(luxus_hunza)
 
@@ -273,7 +273,7 @@ def seed_safardost_master_data():
             print("[+] Transport fleet asset '4x4 Toyota Prado Jeep' seeded successfully.")
 
         db.commit()
-        print("\n[***] ALL MASTER ARCHITECTURE TESTING DATA SEEDS APPLIED SUCCESSFULLY! [***]")
+        print("\n[***] ALL MULTI-MODULE QUANTITATIVE INVENTORY DATA SEEDS APPLIED SUCCESSFULY! [***]")
 
     except Exception as error:
         db.rollback()

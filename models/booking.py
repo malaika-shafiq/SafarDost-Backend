@@ -5,7 +5,7 @@ from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 
 
-# --- ENUM CONVENTIONS MATCHING WORKSPACE DESIGN (Section 9, 14 & 15 Planning) ---
+# --- ENUM CONVENTIONS MATCHING WORKSPACE DESIGN ---
 class BookingTypeEnum(str, enum.Enum):
     hotel = "hotel"
     restaurant = "restaurant"
@@ -29,7 +29,7 @@ class PaymentStatusEnum(str, enum.Enum):
 
 
 # =====================================================================
-# 🏛️ 1. CENTRAL MASTER BOOKING BASE TABLE (Section 9 Planning)
+# 🏛️ 1. CENTRAL MASTER BOOKING BASE TABLE
 # =====================================================================
 class Bookings(Base):
     __tablename__ = "bookings"
@@ -38,16 +38,13 @@ class Bookings(Base):
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     booking_type = Column(Enum(BookingTypeEnum), nullable=False)
 
-    # 👤 OPTION B: Booking-specific contacts for family/friends (Section 13)
+    # Option B: Booking-specific contacts for family/friends
     contact_name = Column(String, nullable=False)
     contact_phone = Column(String, nullable=False)
     contact_email = Column(String, nullable=False)
-
-    # 💳 NATIONAL IDENTITY RECORD VERIFICATION FIELD (Image Requirements Check)
-    # Placeholder token string format handled dynamically: [Aadhaar Redacted] or custom numeric formatting rules applied safely.
     cnic_number = Column(String, nullable=False, comment="Primary Traveler National Identity Verification String")
 
-    # Financials & Status Parameters (Section 9)
+    # Financials & Status Parameters
     total_amount = Column(Float, nullable=False, default=0.0)
     booking_status = Column(Enum(BookingStatusEnum), default=BookingStatusEnum.pending, nullable=False)
     payment_status = Column(Enum(PaymentStatusEnum), default=PaymentStatusEnum.pending, nullable=False)
@@ -69,7 +66,7 @@ class Bookings(Base):
 
 
 # =====================================================================
-# 🏨 2. HOTEL BOOKING CHILD TABLE (Section 10 Planning)
+# 🏨 2. HOTEL BOOKING CHILD TABLE (Quantitative Baseline)
 # =====================================================================
 class HotelBookings(Base):
     __tablename__ = "hotel_bookings"
@@ -79,12 +76,14 @@ class HotelBookings(Base):
     hotel_id = Column(Integer, ForeignKey("hotels.id", ondelete="CASCADE"), nullable=False)
     room_id = Column(Integer, ForeignKey("hotel_rooms.id", ondelete="CASCADE"), nullable=False)
 
-    # Timeline bounds (Section 2.B)
+    # Timeline bounds
     check_in = Column(DateTime(timezone=True), nullable=False)
     check_out = Column(DateTime(timezone=True), nullable=False)
+
+    # 🎯 VITAL INVENTORY LEVEL TRACKING COLUMN: Stores how many physical units are booked in this order
     number_of_rooms = Column(Integer, default=1, nullable=False)
 
-    # Guest distributions (Section 2.C)
+    # Guest distributions
     adults = Column(Integer, default=1, nullable=False)
     children = Column(Integer, default=0, nullable=False)
     child_ages = Column(String, nullable=True, comment="Comma separated format, e.g. '5, 9'")
@@ -96,7 +95,7 @@ class HotelBookings(Base):
 
 
 # =====================================================================
-# 🍽️ 3. RESTAURANT BOOKING CHILD TABLE (Section 11 Planning)
+# 🍽️ 3. RESTAURANT BOOKING CHILD TABLE
 # =====================================================================
 class RestaurantBookings(Base):
     __tablename__ = "restaurant_bookings"
@@ -106,11 +105,11 @@ class RestaurantBookings(Base):
     restaurant_id = Column(Integer, ForeignKey("restaurants.id", ondelete="CASCADE"), nullable=False)
 
     reservation_date = Column(DateTime(timezone=True), nullable=False)
-    reservation_time = Column(String, nullable=False, comment="e.g. '08:00 PM'")
+    reservation_time = Column(String, nullable=False)
 
     adults = Column(Integer, default=1, nullable=False)
     children = Column(Integer, default=0, nullable=False)
-    seating_preference = Column(String, nullable=True, comment="Indoor, Outdoor, or No preference")
+    seating_preference = Column(String, nullable=True)
 
     # Relational Bridges
     booking = relationship("Bookings", back_populates="restaurant_details")
@@ -118,7 +117,7 @@ class RestaurantBookings(Base):
 
 
 # ==========================================
-# 🚌 4. TRANSPORT BOOKING CHILD TABLE (Section 12 Planning)
+# 🚌 4. TRANSPORT BOOKING CHILD TABLE
 # ==========================================
 class TransportBookings(Base):
     __tablename__ = "transport_bookings"
@@ -143,7 +142,7 @@ class TransportBookings(Base):
 
 
 # =====================================================================
-# 🗺️ 5. TOUR BOOKING CHILD TABLE (Section 16 Planning)
+# 🗺️ 5. TOUR BOOKING CHILD TABLE
 # =====================================================================
 class TourBookings(Base):
     __tablename__ = "tour_bookings"
@@ -152,7 +151,6 @@ class TourBookings(Base):
     booking_id = Column(Integer, ForeignKey("bookings.id", ondelete="CASCADE"), nullable=False)
     package_id = Column(Integer, ForeignKey("tour_packages.id", ondelete="CASCADE"), nullable=False)
 
-    # Capacity distributions matching package limits
     number_of_travelers = Column(Integer, default=1, nullable=False)
     adults = Column(Integer, default=1, nullable=False)
     children = Column(Integer, default=0, nullable=False)

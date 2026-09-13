@@ -6,9 +6,16 @@ from sqlalchemy.orm import Session, joinedload
 from database import get_db
 
 # Model and Schema Cross-Imports
-from models.hotel import Hotels, HotelRooms, HotelStatusEnum, RoomStatusEnum
+from models.hotel import Hotels, HotelRooms, HotelStatusEnum
 from models.image import Images, ImageResourceTypeEnum
-from schemas.hotel_schemas import HotelCreate, HotelUpdate, HotelResponse, HotelDetailResponse
+from schemas.hotel_schemas import (
+    HotelCreate,
+    HotelUpdate,
+    HotelResponse,
+    HotelDetailResponse,
+    RoomQuantityUpdate,
+    RoomResponse
+)
 from utils.auth_utils import get_current_admin  # 🔒 Security Gate Dependency
 
 router = APIRouter(prefix="/hotels", tags=["Hotels & Inventory Management"])
@@ -101,7 +108,6 @@ def get_all_hotels_paginated(
             "updated_by": hotel.updated_by,
             "created_at": hotel.created_at,
             "updated_at": hotel.updated_at,
-            # 🏛️ RELATIONAL INCLUSIONS: Allows the app to render titles natively without extra lookups
             "location_name": hotel.location.name if hotel.location else None,
             "category_name": hotel.category.name if hotel.category else None,
             "images": images_map.get(hotel.id, [])
@@ -122,7 +128,7 @@ def get_all_hotels_paginated(
 @router.get("/{hotel_id}", response_model=HotelDetailResponse, status_code=status.HTTP_200_OK)
 def get_hotel_by_id(hotel_id: int, db: db_dependency):
     """
-    PUBLIC ACCESSIBLE: Fetch deep profile parameters, nested room details, and photos array list.
+    PUBLIC ACCESSIBLE: Fetch deep profile parameters, nested room stock types, and photos array list.
     """
     hotel = db.query(Hotels).options(
         joinedload(Hotels.category),
@@ -138,7 +144,7 @@ def get_hotel_by_id(hotel_id: int, db: db_dependency):
         Images.resource_id == hotel_id
     ).all()
 
-    # Fetch corresponding child inventory rooms linked to this establishment
+    # Fetch corresponding child inventory rooms types linked to this establishment
     rooms = db.query(HotelRooms).filter(HotelRooms.hotel_id == hotel_id).all()
 
     return {
@@ -159,7 +165,6 @@ def get_hotel_by_id(hotel_id: int, db: db_dependency):
         "images": [img.image_url for img in photos],
         "rooms": rooms
     }
-
 
 # ==========================================
 # 3. CREATE A HOTEL (🔒 Admin Account Gate Only)
@@ -201,7 +206,7 @@ def create_new_hotel(
     db.commit()
     db.refresh(db_hotel)
 
-    # 2. Iterate and unfold the nested room structures passed inside the single JSON input body
+    # 2. Iterate and unfold the nested room category structures containing bulk quantities
     for room in hotel_request.rooms:
         db_room = HotelRooms(
             hotel_id=db_hotel.id,
@@ -209,7 +214,7 @@ def create_new_hotel(
             description=room.description,
             price_per_night=room.price_per_night,
             capacity=room.capacity,
-            status=RoomStatusEnum.available
+            quantity=room.quantity  # Saves total capacity count directly
         )
         db.add(db_room)
 
@@ -224,7 +229,9 @@ def create_new_hotel(
         db.add(db_image)
 
     db.commit()
+    db.refresh(db_hotel)
     return db_hotel
+
 
 # ==========================================
 # 4. UPDATE AN EXISTING HOTEL (🔒 Admin Account Gate Only)
@@ -244,23 +251,21 @@ def update_hotel(
     if not hotel:
         raise HTTPException(status_code=404, detail="Target hotel profile record not found.")
 
-    # 🏎️ PERFORMANCE REFACTOR: Uses partial dictionary un-setting mechanics safely
+    # Uses partial dictionary un-setting mechanics safely
     update_data = hotel_request.model_dump(exclude_unset=True, exclude={"images"})
     for key, value in update_data.items():
         setattr(hotel, key, value)
 
-    # 🏛️ AUDIT TRAIL LOGGING: Actively maps executing admin ID context variables to clear warnings
+    # 🏛️ AUDIT TRAIL LOGGING
     hotel.updated_by = current_admin.get("id")
 
     # Handle structural photo replacements if image arrays are explicitly passed
     if hotel_request.images is not None:
-        # First wipe previous image maps to prevent leftover file orphans
         db.query(Images).filter(
             Images.resource_type == ImageResourceTypeEnum.hotel,
             Images.resource_id == hotel_id
         ).delete()
 
-        # Insert fresh image mapping list collections
         for url in hotel_request.images:
             db_image = Images(
                 image_url=url,
@@ -276,7 +281,37 @@ def update_hotel(
 
 
 # ==========================================
-# 5. STAGE 1: SOFT-DELETE A HOTEL (🔒 Admin Only)
+# 5. [NEW] MODIFY ROOM QUANTITY (🔒 Option 1: Admin Only)
+# ==========================================
+@router.put("/rooms/{room_id}/quantity", response_model=RoomResponse, status_code=status.HTTP_200_OK)
+def update_room_quantity(
+        room_id: int,
+        quantity_payload: RoomQuantityUpdate,
+        current_admin: admin_dependency,
+        db: db_dependency
+):
+    """
+    ADMIN ONLY: Simple, high-efficiency endpoint to adjust a room type's global baseline stock capacity count.
+    """
+    room = db.query(HotelRooms).filter(HotelRooms.id == room_id).first()
+    if not room:
+        raise HTTPException(status_code=404, detail="Target room inventory record not found.")
+
+    # Update operational quantity stock level metrics
+    room.quantity = quantity_payload.quantity
+
+    # Log operational administrative update metadata trails on parent structure
+    parent_hotel = db.query(Hotels).filter(Hotels.id == room.hotel_id).first()
+    if parent_hotel:
+        parent_hotel.updated_by = current_admin.get("id")
+
+    db.commit()
+    db.refresh(room)
+    return room
+
+
+# ==========================================
+# 6. STAGE 1: SOFT-DELETE A HOTEL (🔒 Admin Only)
 # ==========================================
 @router.delete("/{hotel_id}", status_code=status.HTTP_200_OK)
 def soft_delete_hotel(
@@ -285,19 +320,17 @@ def soft_delete_hotel(
         db: db_dependency
 ):
     """
-    ADMIN ONLY: Safe stage-1 deletion. Shifts status to 'inactive' to hide the property
+    ADMIN ONLY: Safe stage-1 deactivation. Shifts status to 'inactive' to hide the property
     from mobile traveler feeds while preserving historical room booking records and review history.
     """
     hotel = db.query(Hotels).filter(Hotels.id == hotel_id).first()
 
-    # 🏎️ ENUM LOCKDOWN: Performs safe string comparisons against modern system standards
     if not hotel or hotel.status == HotelStatusEnum.inactive:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Active hotel profile not found or already deactivated."
         )
 
-    # Apply soft-delete switches and record accountability audit trails
     hotel.status = HotelStatusEnum.inactive
     hotel.updated_by = current_admin.get("id")
 
@@ -307,7 +340,7 @@ def soft_delete_hotel(
 
 
 # ==========================================
-# 6. STAGE 2: PERMANENT PURGE HOTEL (🔒 Admin Only)
+# 7. STAGE 2: PERMANENT PURGE HOTEL (🔒 Admin Only)
 # ==========================================
 @router.delete("/{hotel_id}/purge", status_code=status.HTTP_200_OK)
 def permanently_purge_hotel(
@@ -316,30 +349,28 @@ def permanently_purge_hotel(
         db: db_dependency
 ):
     """
-    ADMIN ONLY: Stage-2 absolute deletion. Permanently wipes the row from disk
-    storage, cascading down to drop rooms and strips out related polymorphic image URLs cleanly.
+    ADMIN ONLY: Stage-2 absolute deletion. Permanently wipes rows from physical disk,
+    cascading down to clean rooms and strips out related polymorphic image URLs cleanly.
     """
     hotel = db.query(Hotels).filter(Hotels.id == hotel_id).first()
     if not hotel:
         raise HTTPException(status_code=404, detail="Target hotel record not found.")
 
-    # 🔒 TRASH BIN SAFETY GATE: Force them to soft-delete it first before executing a hard purge
     if hotel.status != HotelStatusEnum.inactive:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Security Lock: You must soft-delete this hotel before permanently purging it from storage."
         )
 
-    # 🏛️ AUDIT TRAIL LOGGING: Actively uses the variable payload to clear the PyCharm alert warning!
     print(f"[SECURITY AUDIT] Admin ID {current_admin.get('id')} is executing a permanent hard purge on hotel: {hotel.name}")
 
-    # 1. Clean out nested polymorphic picture rows first to prevent table clutter
+    # 1. Clean out nested polymorphic picture rows first
     db.query(Images).filter(
         Images.resource_type == ImageResourceTypeEnum.hotel,
         Images.resource_id == hotel_id
     ).delete()
 
-    # 2. Hard-delete the core record item from the physical database table disk (Cascades to rooms)
+    # 2. Hard-delete core item (Cascades down to drop child hotel_rooms rows)
     db.delete(hotel)
     db.commit()
 

@@ -54,3 +54,4 @@ class Users(Base):
     # 🏛️ BILATERAL ALIGNMENT: Perfectly mirrors your booking module relationship definitions
     bookings = relationship("Bookings", back_populates="user", cascade="all, delete-orphan")
 
+    trips = relationship("UserTrips", back_populates="user", cascade="all, delete-orphan")

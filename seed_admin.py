@@ -12,6 +12,7 @@ from models.location import Locations  # 👈 Add this line!
 from models.tour_package import TourPackages  # 👈 ADD THIS LINE HERE!
 from models.transport import Transports
 from models.booking import Bookings
+from models.user_trip import UserTrips
 
 # Import your password hashing utility from your utils script
 from utils.auth_utils import hash_password
