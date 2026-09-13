@@ -1,5 +1,6 @@
 from fastapi import FastAPI
 from database import engine, Base
+import models
 # 1. Direct specific imports from the main routers root folder
 from routers.admin import router as admin_router
 from routers.auth import router as auth_router
