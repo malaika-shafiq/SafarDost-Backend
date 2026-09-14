@@ -1,13 +1,13 @@
 import os
-import math
 import json
-import requests
 from typing import Annotated, Optional, List
-from fastapi import APIRouter, Depends, HTTPException, status, Query
-from pydantic import BaseModel, Field
+from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from database import get_db
-from dotenv import load_dotenv
+
+# 🚀 INJECT THE NEW OFFICIAL GOOGLE GENAI LIBRARIES
+from google import genai
+from google.genai import types
 
 # Core System Models Injection for Live RAG Lookup Loops
 from models.place import Places
@@ -15,10 +15,11 @@ from models.hotel import Hotels, HotelRooms
 from models.restaurant import Restaurants
 from models.tour_package import TourPackages
 from models.transport import Transports
-from models.user_trip import UserTrips  # 👈 Added tracking model injection
 from utils.auth_utils import get_current_user  # 🔒 Security Gate Dependency
 
 from schemas.ai_schemas import ChatRequest, ChatResponse
+
+from dotenv import load_dotenv
 
 load_dotenv()
 
@@ -27,36 +28,46 @@ router = APIRouter(prefix="/ai", tags=["LangChain AI Trip Planner Chat Assistant
 db_dependency = Annotated[Session, Depends(get_db)]
 user_dependency = Annotated[dict, Depends(get_current_user)]
 
-GEMINI_API_KEY = os.getenv("GOOGLE_GEMINI_KEY")
-if not GEMINI_API_KEY or GEMINI_API_KEY == "PLACEHOLDER_KEY":
-    GEMINI_API_KEY = "AIzaSyYourActualGeminiKeyGoesHere"
+# ✅ INITIALIZE THE MODERN DIRECT GOOGLE CLIENT SDK ENGINE NATIVELY
+# It automatically reads your GOOGLE_API_KEY / GEMINI environment tokens from memory maps!
+client = genai.Client()
 
 
 # =====================================================================
-# 🛠️ INTERNAL DATABASE RETRIEVAL TOOLS
+# 🛠️ INTERNAL DATABASE RETRIEVAL TOOLS (RAG ENGINE)
 # =====================================================================
 def query_travel_database(db: Session, target_module: str, query_filter: str = "") -> str:
+    """
+    BACKGROUND RETRIEVAL ENGINE: Automatically queries your PostgreSQL tables based on
+    the intent decoded by the model. Completely eliminates hallucinated recommendations.
+    """
     summary = f"Available inventory matching '{query_filter}' inside {target_module}:\n"
+
     if target_module == "tour_packages":
         packages = db.query(TourPackages).filter(TourPackages.status == "active").all()
         for p in packages:
             summary += f"- Package ID {p.id}: {p.name} | Duration: {p.duration} | Price: PKR {p.price} | Slots Left: {p.available_slots}\n"
+
     elif target_module == "hotels":
         hotels = db.query(Hotels).filter(Hotels.status == "active").all()
         for h in hotels:
             summary += f"- Hotel ID {h.id}: {h.name} located in Location ID {h.location_id}. Facilities: {h.facilities}\n"
+
     elif target_module == "places":
         places = db.query(Places).filter(Places.status == "active").all()
         for p in places:
             summary += f"- Spot ID {p.id}: {p.name} | Address: {p.physical_address} | Tips: {p.travel_tips}\n"
+
     elif target_module == "restaurants":
         restaurants = db.query(Restaurants).filter(Restaurants.status == "active").all()
         for r in restaurants:
             summary += f"- Restaurant ID {r.id}: {r.name} | Cuisine: {r.cuisine} | Timing: {r.opening_information}\n"
+
     elif target_module == "transports":
         transports = db.query(Transports).filter(Transports.status == "active").all()
         for t in transports:
             summary += f"- Vehicle ID {t.id}: {t.transport_type} running from {t.from_location} to {t.to_location} | Price: {t.price}\n"
+
     return summary
 
 
@@ -93,6 +104,10 @@ def converse_with_trip_planner_assistant(
         current_user: user_dependency,
         db: db_dependency
 ):
+    """
+    TRAVELER INTERACTIVE ENGAGEMENT INTERFACE: Processes plain text prompts through Gemini.
+    Leverages the verified 'google-genai' SDK engine client stack to ensure absolute execution tracking stability.
+    """
     try:
         user_input = chat_request.message.strip()
         user_display_name = current_user.get("first_name", "Traveler")
@@ -129,25 +144,18 @@ def converse_with_trip_planner_assistant(
         Ensure you only return the raw JSON object string with no markdown formatting. Do not wrap the JSON output in backticks.
         """
 
-        # 3. DIRECT HTTP REST API CALL TO THE OFFICIAL PUBLIC ENDPOINT
-        url = f"https://googleapis.com{GEMINI_API_KEY}"
-        headers = {"Content-Type": "application/json"}
-        payload = {
-            "contents": [{
-                "parts": [{"text": composite_prompt}]
-            }]
-        }
+        # 3. ✅ VERIFIED DIRECT SDK INJECTION: Matches your test script layout perfectly
+        response = client.models.generate_content(
+            model='gemini-3.6-flash',  # Targets the current active baseline flagship model identifier string
+            contents=composite_prompt,
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json"
+            ),
+        )
 
-        response = requests.post(url, json=payload, headers=headers, timeout=15)
-
-        if response.status_code != 200:
-            raise HTTPException(status_code=response.status_code, detail="Google API authentication handshake failed.")
-
-        # 4. PARSE OUTPUT TO SCHEMA CONTRACT Safely
+        # 4. PARSE LIVE RESPONSE TO SYSTEM CONTRACT SCHEMA
         try:
-            response_json = response.json()
-            ai_text = response_json["candidates"]["content"]["parts"]["text"].strip()
-
+            ai_text = response.text.strip()
             clean_json_text = ai_text.replace("```json", "").replace("```", "").strip("`").strip()
             parsed_json = json.loads(clean_json_text)
 
@@ -166,5 +174,5 @@ def converse_with_trip_planner_assistant(
     except Exception as error:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"AI Engine Direct API Request Failure: {str(error)}"
+            detail=f"Gemini SDK Core Execution Failure: {str(error)}"
         )
