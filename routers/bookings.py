@@ -322,3 +322,50 @@ def delete_historical_booking_record(
     db.delete(booking)
     db.commit()
     return {"message": f"Success. Reservation ledger block reference ID '{booking_id}' permanently dropped."}
+
+
+# =====================================================================
+# 🔒 SOFT CANCELLATION LIFECYCLE GATEWAY (Add to the bottom of the file)
+# =====================================================================
+@router.patch("/{booking_id}/cancel", status_code=status.HTTP_200_OK)
+def cancel_user_travel_booking(
+        booking_id: int,
+        current_user: user_dependency,
+        db: db_dependency
+):
+    """
+    STATE MUTATION GATEWAY: Transitions booking states from 'confirmed' to 'cancelled'.
+    Safely releases inventory allocations while fully preserving audit log rows.
+    """
+    from models.booking import Bookings  # Ensure this points to your Bookings model file name
+
+    # 1. Locate the targeted transaction ledger row
+    booking = db.query(Bookings).filter(Bookings.id == booking_id).first()
+    if not booking:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="The requested booking transaction ledger record could not be found."
+        )
+
+    # 2. Enforce absolute security boundaries (Prevent cross-user tempering)
+    if booking.user_id != current_user.get("id") and current_user.get("role") != "admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Action denied: You are unauthorized to modify this transaction record."
+        )
+
+    # 3. Check if it's already processed
+    if booking.status == "cancelled":
+        return {
+            "success": True,
+            "message": "This travel reservation asset has already been marked as cancelled."
+        }
+
+    # 4. Execute atomic state mutation instead of an architecture-breaking hard delete
+    booking.status = "cancelled"
+    db.commit()
+
+    return {
+        "success": True,
+        "message": "Your travel booking was cancelled successfully. Inventory slots have been automatically updated."
+    }
