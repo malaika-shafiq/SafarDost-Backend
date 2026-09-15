@@ -4,6 +4,7 @@ import smtplib
 from email.mime.text import MIMEText
 import resend
 from datetime import date
+import requests
 
 logger = logging.getLogger("uvicorn.error")
 
@@ -163,34 +164,48 @@ The SafarDost/TravelMate Pakistan Backend System Automation
 def send_otp_email(recipient_email: str, otp_code: str) -> bool:
     """
     Dispatches a secure 6-Digit account recovery OTP directly to the user's inbox
-    via HTTPS web REST API layers, completely bypassing SMTP port locks.
+    via direct HTTPS REST API calls, completely bypassing SDK library dependencies.
     """
-    # 🚀 Automatically reads the token from your active environmental maps
-    resend.api_key = os.getenv("RESEND_API_KEY")
+    cloud_key = os.getenv("RESEND_API_KEY")
 
-    if not resend.api_key:
+    if not cloud_key:
         logger.warning("RESEND_API_KEY Missing in Environmental Variable Maps. Skipping live dispatch.")
         return False
 
-    try:
-        # Fire request over standard port 443
-        params: dict = {
-            "from": "Safar Dost Security <onboarding@resend.dev>",  # Free sandbox sending domain
-            "to": [recipient_email],
-            "subject": "Safardost Account Password Recovery OTP",
-            "html": f"""
-                    <h3>Hello,</h3>
-                    <p>You requested a password reset for your Safardost account.</p>
-                    <p>Your secure 6-digit verification code is:</p>
-                    <h2 style='color: #4F46E5;'>👉 {otp_code} 👈</h2>
-                    <p>This verification code will expire in 15 minutes.</p>
-                    <p>Regards,<br>The Safardost Security Team</p>
-                    """
-        }
+    # Universal Resend endpoint for direct HTTP POST requests
+    url = "https://api.resend.com/emails"
 
-        resend.emails.send(params)
-        return True
+    headers = {
+        "Authorization": f"Bearer {str(cloud_key).strip()}",
+        "Content-Type": "application/json"
+    }
+
+    payload = {
+        "from": "Safar Dost Security <onboarding@resend.dev>",
+        "to": [recipient_email],
+        "subject": "Safardost Account Password Recovery OTP",
+        "html": f"""
+        <h3>Hello,</h3>
+        <p>You requested a password reset for your Safardost account.</p>
+        <p>Your secure 6-digit verification code is:</p>
+        <h2 style='color: #4F46E5;'>👉 {otp_code} 👈</h2>
+        <p>This verification code will expire in 15 minutes.</p>
+        <p>Regards,<br>The Safardost Security Team</p>
+        """
+    }
+
+    try:
+        # Fire standard request parameters directly over port 443
+        response = requests.post(url, json=payload, headers=headers, timeout=15)
+
+        # ✅ BYPASSES ALL SYNTAX BUGGING: Simple, clear equality check
+        if response.status_code == 200:
+            return True
+
+        logger.error(f"Resend HTTP Response Failure (Code {response.status_code}): {response.text}")
+        return False
 
     except Exception as api_error:
-        logger.error(f"Resend HTTPS API Transport Error Frame: {str(api_error)}")
+
+        logger.error(f"Resend HTTP Transport Error Frame: {str(api_error)}")
         return False
