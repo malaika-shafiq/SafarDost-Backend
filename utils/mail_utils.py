@@ -2,6 +2,7 @@ import logging
 import os
 import smtplib
 from email.mime.text import MIMEText
+import resend
 from datetime import date
 
 logger = logging.getLogger("uvicorn.error")
@@ -161,46 +162,35 @@ The SafarDost/TravelMate Pakistan Backend System Automation
 
 def send_otp_email(recipient_email: str, otp_code: str) -> bool:
     """
-    Dispatches a secure 6-Digit password recovery OTP directly to the user's inbox.
-    Returns True if sent successfully, False otherwise.
+    Dispatches a secure 6-Digit account recovery OTP directly to the user's inbox
+    via HTTPS web REST API layers, completely bypassing SMTP port locks.
     """
-    sender_email = os.getenv("SAFARDOST_EMAIL_USER")
-    sender_password = os.getenv("SAFARDOST_EMAIL_PASSWORD")
+    # 🚀 Automatically reads the token from your active environmental maps
+    resend.api_key = os.getenv("RESEND_API_KEY")
 
-    # 🛡️ Safety Shield Guardrail: If credentials are unassigned, don't crash the server loop execution thread!
-    if not sender_email or not sender_password:
-        logger.warning("SMTP Mail Credentials Missing in Environmental Variable Maps. Skipping live dispatch.")
+    if not resend.api_key:
+        logger.warning("RESEND_API_KEY Missing in Environmental Variable Maps. Skipping live dispatch.")
         return False
 
-    msg = MIMEText(f"""
-    Hello,
-
-    You requested a password reset for your Safardost account.
-    Your secure 6-digit verification code is:
-
-    👉 {otp_code} 👈
-
-    This verification code will expire in 15 minutes. If you did not make this request, 
-    please secure your account credentials immediately.
-
-    Regards,
-    The Safardost Security Team
-    """)
-
-    msg["Subject"] = "Safardost Account Password Recovery OTP"
-    msg["From"] = sender_email
-    msg["To"] = recipient_email
-
     try:
-        # ✅ FIXED: Correct public endpoint server host layout path for Google Mail SMTP routing channel
-        server = smtplib.SMTP("smtp.gmail.com", 587)
-        server.starttls()
-        server.login(sender_email, sender_password)
-        server.sendmail(sender_email, recipient_email, msg.as_string())
-        server.quit()
+        # Fire request over standard port 443
+        params: dict = {
+            "from": "Safar Dost Security <onboarding@resend.dev>",  # Free sandbox sending domain
+            "to": [recipient_email],
+            "subject": "Safardost Account Password Recovery OTP",
+            "html": f"""
+                    <h3>Hello,</h3>
+                    <p>You requested a password reset for your Safardost account.</p>
+                    <p>Your secure 6-digit verification code is:</p>
+                    <h2 style='color: #4F46E5;'>👉 {otp_code} 👈</h2>
+                    <p>This verification code will expire in 15 minutes.</p>
+                    <p>Regards,<br>The Safardost Security Team</p>
+                    """
+        }
+
+        resend.emails.send(params)
         return True
 
-    except Exception as smtp_error:
-        # Catches local firewall blocks or authentication hiccups gracefully without an app crash
-        logger.error(f"SMTP Mail Gateway Dispatch Interruption Error Frame: {str(smtp_error)}")
+    except Exception as api_error:
+        logger.error(f"Resend HTTPS API Transport Error Frame: {str(api_error)}")
         return False
