@@ -1,7 +1,10 @@
+import logging
 import os
 import smtplib
 from email.mime.text import MIMEText
 from datetime import date
+
+logger = logging.getLogger("uvicorn.error")
 
 
 def send_vendor_booking_email(booking_id: int, hotel_name: str, location: str, check_in: date, check_out: date,
@@ -154,3 +157,50 @@ The SafarDost/TravelMate Pakistan Backend System Automation
             server.send_message(msg)
     except Exception as email_error:
         print(f"[TRANSPORT NOTIFICATION WARNING]: Transit alert email failed to execute: {email_error}")
+
+
+def send_otp_email(recipient_email: str, otp_code: str) -> bool:
+    """
+    Dispatches a secure 6-Digit password recovery OTP directly to the user's inbox.
+    Returns True if sent successfully, False otherwise.
+    """
+    sender_email = os.getenv("SAFARDOST_EMAIL_USER")
+    sender_password = os.getenv("SAFARDOST_EMAIL_PASSWORD")
+
+    # 🛡️ Safety Shield Guardrail: If credentials are unassigned, don't crash the server loop execution thread!
+    if not sender_email or not sender_password:
+        logger.warning("SMTP Mail Credentials Missing in Environmental Variable Maps. Skipping live dispatch.")
+        return False
+
+    msg = MIMEText(f"""
+    Hello,
+
+    You requested a password reset for your Safardost account.
+    Your secure 6-digit verification code is:
+
+    👉 {otp_code} 👈
+
+    This verification code will expire in 15 minutes. If you did not make this request, 
+    please secure your account credentials immediately.
+
+    Regards,
+    The Safardost Security Team
+    """)
+
+    msg["Subject"] = "Safardost Account Password Recovery OTP"
+    msg["From"] = sender_email
+    msg["To"] = recipient_email
+
+    try:
+        # ✅ FIXED: Correct public endpoint server host layout path for Google Mail SMTP routing channel
+        server = smtplib.SMTP("smtp.gmail.com", 587)
+        server.starttls()
+        server.login(sender_email, sender_password)
+        server.sendmail(sender_email, recipient_email, msg.as_string())
+        server.quit()
+        return True
+
+    except Exception as smtp_error:
+        # Catches local firewall blocks or authentication hiccups gracefully without an app crash
+        logger.error(f"SMTP Mail Gateway Dispatch Interruption Error Frame: {str(smtp_error)}")
+        return False

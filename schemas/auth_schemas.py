@@ -75,3 +75,12 @@ class AdminUserStatsResponse(BaseModel):
     admins: int
     guides: int
     new_this_week: int
+
+
+class ForgotPasswordRequest(BaseModel):
+    email: EmailStr
+
+class ResetPasswordRequest(BaseModel):
+    email: EmailStr
+    otp: str
+    new_password: str

@@ -40,6 +40,10 @@ class Users(Base):
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
     last_login_at = Column(DateTime(timezone=True), nullable=True)
 
+    reset_otp = Column(String, nullable=True)
+    otp_expiry = Column(DateTime, nullable=True)
+
+
     # Relational links: Connects a user to their generated application resources
     reviews = relationship("Reviews", back_populates="user")
 

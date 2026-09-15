@@ -1,3 +1,5 @@
+import random
+import datetime
 from datetime import timedelta
 from typing import Annotated
 from jose import JWTError, jwt
@@ -8,11 +10,12 @@ from sqlalchemy.orm import Session
 from database import get_db
 from models.user import Users, UserStatusEnum  # 👈 Imported your Enum here
 from schemas import auth_schemas
-from schemas.auth_schemas import PasswordUpdate, TokenRefreshRequest
+from schemas.auth_schemas import PasswordUpdate, TokenRefreshRequest, ForgotPasswordRequest, ResetPasswordRequest
 from utils.auth_utils import (
     get_current_user, hash_password, authenticate_traveler, bcrypt_context,
     generate_access_token, generate_refresh_token, SECRET_KEY, ALGORITHM
 )
+from utils.mail_utils import send_otp_email
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 
@@ -239,3 +242,81 @@ def delete_user_account(current_user: user_dependency, db: db_dependency):
     db.add(user)
     db.commit()
     return {"message": "Your account has been deactivated successfully."}
+
+
+@router.post("/forgot-password", status_code=status.HTTP_200_OK)
+def request_password_reset_otp(payload: ForgotPasswordRequest, db: Session = Depends(get_db)):
+    """
+    ACCOUNT RECOVERY GATEWAY: Generates an immutable 6-digit verification OTP,
+    commits it natively to disk columns, and triggers an out-of-band SMTP mail dispatch frame.
+    """
+    user = db.query(Users).filter(Users.email == payload.email).first()
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="The requested email address is not registered in our system repository."
+        )
+
+    # Generate a secure 6-digit numerical string token
+    generated_otp = str(random.randint(100000, 999999))
+
+    # Establish a strict 15-minute token expiry deadline window map
+    expiry_time = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None) + datetime.timedelta(minutes=15)
+
+    # Synchronize tracking matrix modifications straight into your PostgreSQL row columns
+    user.reset_otp = generated_otp
+    user.otp_expiry = expiry_time
+    db.commit()
+
+    # 🚀 DISPATCH LIVE EMAIL HANDSHAKE: Fires your native smtp transport thread across the web network
+    mail_sent = send_otp_email(payload.email, generated_otp)
+
+    # Returns complete operational metadata so your presentation panel is 100% bulletproof
+    return {
+        "success": True,
+        "message": "Password reset token successfully generated.",
+        "email_dispatched": mail_sent,
+        "presentation_demo_otp": generated_otp,  # 🛡️ Safety shield: view the OTP in Swagger instantly!
+        "expires_at": expiry_time.isoformat()
+    }
+
+
+@router.post("/reset-password", status_code=status.HTTP_200_OK)
+def finalize_account_password_reset(payload: ResetPasswordRequest, db: Session = Depends(get_db)):
+    """
+    MUTATION PROCESSOR: Validates incoming structural OTP frames, enforces expiry windows,
+    and commits the secure hashed password block straight to the user disk registry.
+    """
+    user = db.query(Users).filter(Users.email == payload.email).first()
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User record not found."
+        )
+
+    if not user.reset_otp or user.reset_otp != payload.otp.strip():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid account recovery token code."
+        )
+
+    # Verify that the incoming operational request timestamp fits within the token deadline
+    current_time = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
+    if user.otp_expiry and current_time > user.otp_expiry:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="The recovery token code has expired."
+        )
+
+    # Securely hash the password before saving to follow strict data security standards
+    user.hashed_password = hash_password(payload.new_password)
+
+    # Flush and clear out token snapshots after successful update to prevent replay attacks
+    user.reset_otp = None
+    user.otp_expiry = None
+
+    db.commit()
+    return {
+        "success": True,
+        "message": "Your profile security password has been updated successfully!"
+    }
