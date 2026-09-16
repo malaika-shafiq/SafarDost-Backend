@@ -18,7 +18,6 @@ from routers.user_trips import router as user_trips_router
 # 2. Direct specific imports from the services subfolder
 from routers.services.weather import router as weather_router
 from routers.services.ai_chat import router as ai_chat_router
-from routers.services.trips_planner import router as trips_planner_router
 from routers.services.maps import router as maps_router
 from dotenv import load_dotenv
 load_dotenv()
@@ -59,7 +58,6 @@ app.include_router(bookings_router)
 app.include_router(user_trips_router)
 app.include_router(weather_router)
 app.include_router(ai_chat_router)
-app.include_router(trips_planner_router)
 app.include_router(maps_router)
 
 
