@@ -7,11 +7,13 @@ def get_utc_now():
 
 
 class WeatherCache(Base):
-    __tablename__ = "weather_caches"
+    __tablename__ = "weather_cache"
 
     id = Column(Integer, primary_key=True, index=True)
     city_name = Column(String, index=True, nullable=False)
     temperature_c = Column(Float, nullable=False)
+    max_temp_c = Column(Float, nullable=True)
+    min_temp_c = Column(Float, nullable=True)
     condition_text = Column(String, nullable=False)
     humidity = Column(Integer, nullable=False)
     last_updated = Column(DateTime, default=get_utc_now, onupdate=get_utc_now)

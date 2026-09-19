@@ -1,13 +1,37 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
+from typing import List
 
+class TimeSlotRating(BaseModel):
+    label: str
+    rating: str
+
+class ActivitySuitabilityItem(BaseModel):
+    activity_type: str
+    title: str
+    status: str
+    time_slots: List[TimeSlotRating]
+
+class PollenCounts(BaseModel):
+    tree: str
+    grass: str
+    ragweed: str
+
+class AirQualityData(BaseModel):
+    aqi_level: str
+    aqi_score: int
+    pollen: PollenCounts
+
+# 🚀 INJECTED TODAY'S MAX AND MIN TEMPERATURE VARIABLES:
 class WeatherResponse(BaseModel):
-    city_name: str = Field(..., description="Target city name returned by the weather service")
-    temperature_c: float = Field(..., description="Current temperature recorded in Celsius")
-    condition_text: str = Field(..., description="Atmospheric condition text description")
-    humidity: int = Field(..., description="Atmospheric humidity percentage level")
+    city_name: str
+    temperature_c: float
+    max_temp_c: float
+    min_temp_c: float
+    condition_text: str
+    humidity: int
+    activities: List[ActivitySuitabilityItem]
+    air_quality: AirQualityData
 
-
-# Purge mean saaf karna
 class WeatherPurgeResponse(BaseModel):
-    success: bool = Field(..., description="Status flag indicating if the database purge completed")
-    records_deleted: int = Field(..., description="The total number of cached weather rows removed from SQLite")
+    success: bool
+    records_deleted: int
