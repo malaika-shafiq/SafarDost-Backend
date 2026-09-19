@@ -1,5 +1,6 @@
 import os
 import json
+import time
 from typing import Annotated, Optional, List
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
@@ -145,14 +146,36 @@ def converse_with_trip_planner_assistant(
         cloud_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_GEMINI_KEY")
         client = genai.Client(api_key=str(cloud_key).strip())
 
-        # ✅ MATCHES YOUR CODE LINE 32–40 EXACTLY: Hits the identical generation method
-        response = client.models.generate_content(
-            model='gemini-3.6-flash',  # Your verified running model string parameter
-            contents=composite_prompt,
-            config=types.GenerateContentConfig(
-                response_mime_type="application/json"
-            ),
-        )
+        # 🏎️ INDUSTRY-STANDARD HIGH-AVAILABILITY EXPONENTIAL BACKOFF RETRY ENGINE:
+        max_retries = 3
+        sleep_delay = 1.0  # Initial sleep delay buffer in seconds
+        response = None
+
+        for attempt in range(max_retries):
+            try:
+                # 🚀 EXECUTES YOUR AUTHENTIC LIVE MODEL GENERATION:
+                response = client.models.generate_content(
+                    model='gemini-3.6-flash',  # Your verified running model string parameter
+                    contents=composite_prompt,
+                    config=types.GenerateContentConfig(
+                        response_mime_type="application/json"
+                    ),
+                )
+                # If the call succeeds, break out of the retry loop completely!
+                break
+
+            except Exception as api_error:
+                # If we hit Google's 503 high demand or network spikes, pause and try again!
+                if attempt < max_retries - 1:
+                    time.sleep(sleep_delay)
+                    sleep_delay *= 2  # Double the backoff duration for the next attempt (1s -> 2s)
+                    continue
+
+                # If all 3 live execution attempts fail completely, raise the clean HTTP exception trace
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail=f"Gemini SDK Core Execution Failure after retries: {str(api_error)}"
+                )
 
         # 4. PARSE LIVE RESPONSE TO SYSTEM CONTRACT SCHEMA
         try:
@@ -171,6 +194,11 @@ def converse_with_trip_planner_assistant(
                 show_plan_button=False,
                 meta_plan_data=None
             )
+
+    except HTTPException as http_err:
+        # Let our custom 503 error pass straight through to the Swagger dashboard!
+        raise http_err
+
 
     except Exception as error:
         raise HTTPException(
