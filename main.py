@@ -19,6 +19,7 @@ from routers.user_trips import router as user_trips_router
 from routers.services.weather import router as weather_router
 from routers.services.ai_chat import router as ai_chat_router
 from routers.services.maps import router as maps_router
+from routers.services.media import router as media_router
 from dotenv import load_dotenv
 load_dotenv()
 import os
@@ -53,6 +54,7 @@ app.include_router(tour_package_router)
 app.include_router(transport_router)
 app.include_router(categories_router)
 app.include_router(locations_router)
+app.include_router(media_router)
 app.include_router(reviews_router)
 app.include_router(bookings_router)
 app.include_router(user_trips_router)
