@@ -86,23 +86,23 @@ def create_transaction_booking(
     db.flush()
 
     # ==========================================
-    # A. UPDATED SUB-ROUTING WORKFLOW: HOTEL INVENTORY QUANTITY CHECK
+    # A. SUB-ROUTING WORKFLOW: HOTEL INVENTORY QUANTITY CHECK
     # ==========================================
     if booking_request.booking_type == BookingTypeEnum.hotel:
         details = booking_request.hotel_details
         if not details:
             raise HTTPException(status_code=400, detail="Missing required 'hotel_details' payload block.")
 
+        # 🔒 PESSIMISTIC LOCK APPLIED: Protects room targets against multi-user race conditions natively
         target_room = db.query(HotelRooms).filter(
             HotelRooms.id == details.room_id,
             HotelRooms.hotel_id == details.hotel_id
-        ).first()
+        ).with_for_update().first()
 
         if not target_room:
             raise HTTPException(status_code=404, detail="The requested room type classification was not found.")
 
         # 📅 OVERLAPPING OCCUPANCY ALGORITHM
-        # Sums up all currently reserved rooms of this type where dates intersect with the requested stay
         booked_rooms_sum = db.query(func.sum(HotelBookings.number_of_rooms)).join(Bookings).filter(
             HotelBookings.room_id == details.room_id,
             Bookings.booking_status == BookingStatusEnum.confirmed,
@@ -110,7 +110,6 @@ def create_transaction_booking(
             HotelBookings.check_in < details.check_out
         ).scalar() or 0
 
-        # Check if the remaining stock can accommodate the new checkout request
         if (booked_rooms_sum + details.number_of_rooms) > target_room.quantity:
             rooms_left = max(0, target_room.quantity - booked_rooms_sum)
             raise HTTPException(
@@ -165,7 +164,8 @@ def create_transaction_booking(
         if not details:
             raise HTTPException(status_code=400, detail="Missing required 'transport_details' payload block.")
 
-        vehicle = db.query(Transports).filter(Transports.id == details.transport_id, Transports.status == TransportStatusEnum.active).first()
+        vehicle = db.query(Transports).filter(Transports.id == details.transport_id,
+                                              Transports.status == TransportStatusEnum.active).first()
         if not vehicle:
             raise HTTPException(status_code=400, detail="Target vehicle profile is offline.")
 
@@ -195,7 +195,12 @@ def create_transaction_booking(
         if not details:
             raise HTTPException(status_code=400, detail="Missing required 'tour_details' payload block.")
 
-        package = db.query(TourPackages).filter(TourPackages.id == details.package_id, TourPackages.status == PackageStatusEnum.active).first()
+        # 🔒 PESSIMISTIC LOCK APPLIED: Protects package seats from concurrent race conditions
+        package = db.query(TourPackages).filter(
+            TourPackages.id == details.package_id,
+            TourPackages.status == PackageStatusEnum.active
+        ).with_for_update().first()
+
         if not package:
             raise HTTPException(status_code=400, detail="Target tour package is offline.")
 
@@ -230,6 +235,7 @@ def get_individual_booking_by_id(
         db: db_dependency
 ):
     """ Single Ledger Profile View. Enforces absolute user access security boundaries. """
+    # ❌ READ-ONLY PATH: Intentionally excludes pessimistic locking to preserve low latency traffic streams
     booking = db.query(Bookings).options(
         joinedload(Bookings.hotel_details),
         joinedload(Bookings.restaurant_details),
@@ -280,13 +286,11 @@ def moderate_booking_status_override(
 
         # Scenario A: Refund group tour package seat assignments instantly
         if booking.booking_type == BookingTypeEnum.tour and booking.tour_details:
-            package = db.query(TourPackages).filter(TourPackages.id == booking.tour_details.package_id).first()
+            package = db.query(TourPackages).filter(
+                TourPackages.id == booking.tour_details.package_id).with_for_update().first()
             if package:
                 package.available_slots += booking.tour_details.number_of_travelers
                 db.add(package)
-
-        # Note: Hotel room capacity updates require zero status resets now,
-        # since rooms are released back into the date pool automatically when the status shifts!
 
     booking.booking_status = new_status
     booking.payment_status = new_payment
@@ -325,7 +329,7 @@ def delete_historical_booking_record(
 
 
 # =====================================================================
-# 🔒 SOFT CANCELLATION LIFECYCLE GATEWAY (Add to the bottom of the file)
+# 🔒 SOFT CANCELLATION LIFECYCLE GATEWAY (Polished & Fully Synchronized)
 # =====================================================================
 @router.patch("/{booking_id}/cancel", status_code=status.HTTP_200_OK)
 def cancel_user_travel_booking(
@@ -334,11 +338,9 @@ def cancel_user_travel_booking(
         db: db_dependency
 ):
     """
-    STATE MUTATION GATEWAY: Transitions booking states from 'confirmed' to 'cancelled'.
-    Safely releases inventory allocations while fully preserving audit log rows.
+    STATE MUTATION GATEWAY: Transitions booking states from active to 'cancelled'.
+    Releases slot capacities back into production while fully preserving audit logs.
     """
-    from models.booking import Bookings  # Ensure this points to your Bookings model file name
-
     # 1. Locate the targeted transaction ledger row
     booking = db.query(Bookings).filter(Bookings.id == booking_id).first()
     if not booking:
@@ -354,15 +356,30 @@ def cancel_user_travel_booking(
             detail="Action denied: You are unauthorized to modify this transaction record."
         )
 
-    # 3. Check if it's already processed
-    if booking.status == "cancelled":
+    # ✅ FIXED FIELD ATTRIBUTE NAME: Unifies perfectly with 'booking_status' parameter schema
+    if booking.booking_status == BookingStatusEnum.cancelled:
         return {
             "success": True,
             "message": "This travel reservation asset has already been marked as cancelled."
         }
 
-    # 4. Execute atomic state mutation instead of an architecture-breaking hard delete
-    booking.status = "cancelled"
+    # 🚨 DYNAMIC AUTOMATED INVENTORY RELEASE SYSTEM
+    # If the booking is a tour package, refund the slots instantly upon cancellation
+    if booking.booking_type == BookingTypeEnum.tour and booking.tour_details:
+        package = db.query(TourPackages).filter(
+            TourPackages.id == booking.tour_details.package_id).with_for_update().first()
+        if package:
+            package.available_slots += booking.tour_details.number_of_travelers
+            db.add(package)
+
+    # Note: Hotel room updates require no manual increment code here,
+    # since our query filters release rooms back into the date pool the second booking_status shifts!
+
+    # Execute safe state mutation changes
+    booking.booking_status = BookingStatusEnum.cancelled
+    booking.payment_status = PaymentStatusEnum.refunded if booking.payment_status == PaymentStatusEnum.paid else PaymentStatusEnum.pending
+
+    db.add(booking)
     db.commit()
 
     return {
