@@ -65,7 +65,22 @@ class RestaurantResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)  # 👈 Modern Pydantic v2 binding
 
 
+# 📊 NEW NESTED CONTRACT SHAPING DINING FEEDBACK ITEMS:
+class RestaurantReviewItem(BaseModel):
+    id: int
+    rating: int
+    comment: str
+    reviewer_name: str
+    created_at: datetime
+
+
 class RestaurantDetailResponse(BaseModel):
     """ Advanced nested payload schema designed to feed your React Native mobile layout profile views. """
     restaurant: RestaurantResponse
     images: List[str] = Field(default=[], description="Unfolded cloud storage photo string URL lists")
+
+    # 🚀 REAL-TIME REVIEWS TELEMETRY CHANNELS EMBEDDED PERFECTLY:
+    reviews: List[RestaurantReviewItem] = Field(default=[],
+                                                description="Polymorphic feedback arrays from active travelers")
+    average_rating: float = Field(default=0.0, description="On-the-fly rounded aggregate star score calculation value")
+    total_reviews_count: int = Field(default=0, description="Total active feedback rows log sum count")

@@ -2,7 +2,7 @@ import math
 from datetime import datetime
 from typing import Annotated, Optional
 from fastapi import APIRouter, Depends, HTTPException, status, Query
-from sqlalchemy import desc, func
+from sqlalchemy import desc, func, and_
 from sqlalchemy.orm import Session, joinedload
 from database import get_db
 
@@ -11,7 +11,7 @@ from models.booking import Bookings, HotelBookings, RestaurantBookings, Transpor
 from models.booking import BookingTypeEnum, BookingStatusEnum, PaymentStatusEnum
 from models.hotel import Hotels, HotelRooms
 from models.restaurant import Restaurants
-from models.transport import Transports, TransportStatusEnum
+from models.transport import Transports, TransportStatusEnum, TransportRentalModeEnum
 from models.tour_package import TourPackages, PackageStatusEnum
 from schemas.booking_schemas import BookingCreate, BookingResponse
 from utils.auth_utils import get_current_user
@@ -86,14 +86,13 @@ def create_transaction_booking(
     db.flush()
 
     # ==========================================
-    # A. SUB-ROUTING WORKFLOW: HOTEL INVENTORY QUANTITY CHECK
+    # A. HOTEL WORKFLOW LOGIC
     # ==========================================
     if booking_request.booking_type == BookingTypeEnum.hotel:
         details = booking_request.hotel_details
         if not details:
             raise HTTPException(status_code=400, detail="Missing required 'hotel_details' payload block.")
 
-        # 🔒 PESSIMISTIC LOCK APPLIED: Protects room targets against multi-user race conditions natively
         target_room = db.query(HotelRooms).filter(
             HotelRooms.id == details.room_id,
             HotelRooms.hotel_id == details.hotel_id
@@ -102,7 +101,6 @@ def create_transaction_booking(
         if not target_room:
             raise HTTPException(status_code=404, detail="The requested room type classification was not found.")
 
-        # 📅 OVERLAPPING OCCUPANCY ALGORITHM
         booked_rooms_sum = db.query(func.sum(HotelBookings.number_of_rooms)).join(Bookings).filter(
             HotelBookings.room_id == details.room_id,
             Bookings.booking_status == BookingStatusEnum.confirmed,
@@ -157,22 +155,57 @@ def create_transaction_booking(
         db.add(db_child)
 
     # ==========================================
-    # C. TRANSPORT BRANCH
+    # C. UPGRADED HYBRID TRANSPORT CHECKOUT BRANCH
     # ==========================================
     elif booking_request.booking_type == BookingTypeEnum.transport:
         details = booking_request.transport_details
         if not details:
             raise HTTPException(status_code=400, detail="Missing required 'transport_details' payload block.")
 
-        vehicle = db.query(Transports).filter(Transports.id == details.transport_id,
-                                              Transports.status == TransportStatusEnum.active).first()
+        # 🔒 Apply row-level Pessimistic Locking to manage live records cleanly without race conditions [INDEX: 1.1.2]
+        vehicle = db.query(Transports).filter(
+            Transports.id == details.transport_id,
+            Transports.status == TransportStatusEnum.active
+        ).with_for_update().first()
+
         if not vehicle:
-            raise HTTPException(status_code=400, detail="Target vehicle profile is offline.")
+            raise HTTPException(status_code=400, detail="The targeted vehicle asset profile is offline or unavailable.")
 
-        if vehicle.capacity < (details.adults + details.children):
-            raise HTTPException(status_code=400, detail="Seating Capacity Overflow.")
+        requested_passengers = details.adults + details.children
 
-        db_master.total_amount = vehicle.price
+        # 🚌 STRATEGY 1: PUBLIC SHARED/SEAT-BASED SYSTEM (Buses, Coasters, Hiace Vans) [INDEX: 1.1.2]
+        if vehicle.rental_mode == TransportRentalModeEnum.public_shared:
+            if vehicle.available_seats < requested_passengers:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Ticket Capacity Shortage: Only {vehicle.available_seats} seats left on this scheduled route."
+                )
+
+            vehicle.available_seats -= requested_passengers
+            db_master.total_amount = vehicle.price * requested_passengers
+
+        # 🚗 STRATEGY 2: PRIVATE DEDICATED LEASING (Jeeps, Cars, Prados) [INDEX: 1.1.2]
+        else:
+            if vehicle.capacity < requested_passengers:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Vehicle Capacity Mismatch: This car option can handle a max limit of {vehicle.capacity} occupants."
+                )
+
+            overlapping_lease = db.query(TransportBookings).join(Bookings).filter(
+                TransportBookings.transport_id == details.transport_id,
+                Bookings.booking_status.in_([BookingStatusEnum.confirmed, BookingStatusEnum.pending]),
+                func.date(TransportBookings.departure_date) == func.date(details.departure_date)
+            ).first()
+
+            if overlapping_lease:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Schedule Block: This private vehicle has already been reserved for this target calendar date."
+                )
+
+            db_master.total_amount = vehicle.price
+
         db_child = TransportBookings(
             booking_id=db_master.id,
             transport_id=details.transport_id,
@@ -186,6 +219,7 @@ def create_transaction_booking(
             dropoff_location=details.dropoff_location
         )
         db.add(db_child)
+        db.add(vehicle)
 
     # ==========================================
     # D. TOUR BUNDLE BRANCH
@@ -195,7 +229,6 @@ def create_transaction_booking(
         if not details:
             raise HTTPException(status_code=400, detail="Missing required 'tour_details' payload block.")
 
-        # 🔒 PESSIMISTIC LOCK APPLIED: Protects package seats from concurrent race conditions
         package = db.query(TourPackages).filter(
             TourPackages.id == details.package_id,
             TourPackages.status == PackageStatusEnum.active
@@ -235,7 +268,6 @@ def get_individual_booking_by_id(
         db: db_dependency
 ):
     """ Single Ledger Profile View. Enforces absolute user access security boundaries. """
-    # ❌ READ-ONLY PATH: Intentionally excludes pessimistic locking to preserve low latency traffic streams
     booking = db.query(Bookings).options(
         joinedload(Bookings.hotel_details),
         joinedload(Bookings.restaurant_details),
@@ -268,7 +300,7 @@ def moderate_booking_status_override(
 ):
     """
     ADMIN ONLY: Overrides system transaction states.
-    Automatically refunds seat slot allocations to tour packages upon cancellation/rejection.
+    Automatically refunds seat slot allocations to tour packages or public shared vehicles upon cancellation/rejection.
     """
     if current_user.get("role") != "admin":
         raise HTTPException(
@@ -280,17 +312,28 @@ def moderate_booking_status_override(
     if not booking:
         raise HTTPException(status_code=404, detail="Target transaction booking record not found.")
 
-    # 🚨 INVENTORY REFUND ENGINE
+    # 🚨 SYSTEM INVENTORY AUTO-REFUND ENGINE (MODERATION TRIGGERS)
     if new_status in [BookingStatusEnum.rejected,
                       BookingStatusEnum.cancelled] and booking.booking_status == BookingStatusEnum.pending:
 
         # Scenario A: Refund group tour package seat assignments instantly
         if booking.booking_type == BookingTypeEnum.tour and booking.tour_details:
             package = db.query(TourPackages).filter(
-                TourPackages.id == booking.tour_details.package_id).with_for_update().first()
+                TourPackages.id == booking.tour_details.package_id
+            ).with_for_update().first()
             if package:
                 package.available_slots += booking.tour_details.number_of_travelers
                 db.add(package)
+
+        # Scenario B: Refund Bus Passenger Seats instantly back to the available counter upon admin rejection/cancellation [INDEX: 1.1.2]
+        elif booking.booking_type == BookingTypeEnum.transport and booking.transport_details:
+            vehicle = db.query(Transports).filter(
+                Transports.id == booking.transport_details.transport_id
+            ).with_for_update().first()
+            if vehicle and vehicle.rental_mode == TransportRentalModeEnum.public_shared:
+                returned_seats = booking.transport_details.adults + booking.transport_details.children
+                vehicle.available_seats += returned_seats
+                db.add(vehicle)
 
     booking.booking_status = new_status
     booking.payment_status = new_payment
@@ -341,7 +384,6 @@ def cancel_user_travel_booking(
     STATE MUTATION GATEWAY: Transitions booking states from active to 'cancelled'.
     Releases slot capacities back into production while fully preserving audit logs.
     """
-    # 1. Locate the targeted transaction ledger row
     booking = db.query(Bookings).filter(Bookings.id == booking_id).first()
     if not booking:
         raise HTTPException(
@@ -349,33 +391,41 @@ def cancel_user_travel_booking(
             detail="The requested booking transaction ledger record could not be found."
         )
 
-    # 2. Enforce absolute security boundaries (Prevent cross-user tempering)
     if booking.user_id != current_user.get("id") and current_user.get("role") != "admin":
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Action denied: You are unauthorized to modify this transaction record."
         )
 
-    # ✅ FIXED FIELD ATTRIBUTE NAME: Unifies perfectly with 'booking_status' parameter schema
     if booking.booking_status == BookingStatusEnum.cancelled:
         return {
             "success": True,
             "message": "This travel reservation asset has already been marked as cancelled."
         }
 
-    # 🚨 DYNAMIC AUTOMATED INVENTORY RELEASE SYSTEM
-    # If the booking is a tour package, refund the slots instantly upon cancellation
+    # 🚨 DYNAMIC AUTOMATED INVENTORY RELEASE SYSTEM (USER CANCELLATION TRIGGERS)
+    # Scenario A: If the booking is a tour package, refund the slots instantly upon cancellation
     if booking.booking_type == BookingTypeEnum.tour and booking.tour_details:
         package = db.query(TourPackages).filter(
-            TourPackages.id == booking.tour_details.package_id).with_for_update().first()
+            TourPackages.id == booking.tour_details.package_id
+        ).with_for_update().first()
         if package:
             package.available_slots += booking.tour_details.number_of_travelers
             db.add(package)
 
-    # Note: Hotel room updates require no manual increment code here,
-    # since our query filters release rooms back into the date pool the second booking_status shifts!
+    # Scenario B: Refund Bus Passenger Seats instantly back to the available counter upon traveler cancellation [INDEX: 1.1.2]
+    elif booking.booking_type == BookingTypeEnum.transport and booking.transport_details:
+        vehicle = db.query(Transports).filter(
+            Transports.id == booking.transport_details.transport_id
+        ).with_for_update().first()
+        if vehicle and vehicle.rental_mode == TransportRentalModeEnum.public_shared:
+            returned_seats = booking.transport_details.adults + booking.transport_details.children
+            vehicle.available_seats += returned_seats
+            db.add(vehicle)
 
-    # Execute safe state mutation changes
+    # Note: Private vehicles (Jeeps/Cars) are automatically released from the schedule pool
+    # the second booking_status shifts out of confirmed/pending bounds, matching our overlapping query filters!
+
     booking.booking_status = BookingStatusEnum.cancelled
     booking.payment_status = PaymentStatusEnum.refunded if booking.payment_status == PaymentStatusEnum.paid else PaymentStatusEnum.pending
 

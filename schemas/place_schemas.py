@@ -67,7 +67,21 @@ class PlaceResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)  # 👈 Modern Pydantic v2 binding
 
 
+# 📊 NEW NESTED CONTRACT SHAPING TOURIST FEEDBACK ITEMS:
+class PlaceReviewItem(BaseModel):
+    id: int
+    rating: int
+    comment: str
+    reviewer_name: str
+    created_at: datetime
+
+
 class PlaceDetailResponse(BaseModel):
     """ Custom response structure to deliver full details alongside the image list array. """
     place: PlaceResponse
     images: List[str] = Field(default=[])
+
+    # 🚀 REAL-TIME REVIEWS TELEMETRY CHANNELS EMBEDDED PERFECTLY:
+    reviews: List[PlaceReviewItem] = Field(default=[], description="Polymorphic feedback arrays from active travelers")
+    average_rating: float = Field(default=0.0, description="On-the-fly rounded aggregate star score calculation value")
+    total_reviews_count: int = Field(default=0, description="Total active feedback rows log sum count")

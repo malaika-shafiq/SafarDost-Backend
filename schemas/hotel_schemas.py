@@ -55,7 +55,8 @@ class HotelCreate(BaseModel):
     category_id: int = Field(..., description="The matching master entry ID inside categories table")
 
     # Nested inventory array (Admin defines custom rooms and quantities here)
-    rooms: List[RoomCreate] = Field(..., min_length=1, description="List tracking structural room types and stock levels to onboard")
+    rooms: List[RoomCreate] = Field(..., min_length=1,
+                                    description="List tracking structural room types and stock levels to onboard")
 
 
 class HotelUpdate(BaseModel):
@@ -89,8 +90,22 @@ class HotelResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+# 📊 NEW NESTED CONTRACT SHAPING TRAVELER FEEDBACK REVIEWS NATIVELY:
+class HotelReviewItem(BaseModel):
+    id: int
+    rating: int
+    comment: str
+    reviewer_name: str
+    created_at: datetime
+
+
 class HotelDetailResponse(BaseModel):
     """ Advanced nested data structure tailored to feed mobile traveler app profile screens. """
     hotel: HotelResponse
     images: List[str] = Field(default=[], description="Unfolded media storage URL link arrays")
     rooms: List[RoomResponse] = Field(default=[], description="Unfolded child room categories stock inventories")
+
+    # 🚀 UPGRADED REAL-TIME TELEMETRY FIELDS FOR YOUR FEEDBACK HOOKS:
+    reviews: List[HotelReviewItem] = Field(default=[], description="Polymorphic feedback arrays from active travelers")
+    average_rating: float = Field(default=0.0, description="On-the-fly rounded aggregate star score calculation value")
+    total_reviews_count: int = Field(default=0, description="Total active feedback rows log sum count")

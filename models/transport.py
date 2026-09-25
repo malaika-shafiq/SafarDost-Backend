@@ -5,10 +5,14 @@ from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 
 
-# Explicit enum matching the "Availability" and "Delete/deactivate" principles in your SRS
 class TransportStatusEnum(str, enum.Enum):
     active = "active"
     inactive = "inactive"
+
+
+class TransportRentalModeEnum(str, enum.Enum):
+    private_dedicated = "private_dedicated"  # Entire vehicle hire (Car, Jeep, Prado)
+    public_shared = "public_shared"  # Seat-by-seat ticket system (Bus, Coaster)
 
 
 class Transports(Base):
@@ -25,10 +29,22 @@ class Transports(Base):
     arrival_time = Column(String, nullable=False, comment="Scheduled approximate arrival details / timing rule")
 
     # Capacity & Pricing Constraints
-    price = Column(Float, nullable=False, comment="Fare price value mapping string")
+    price = Column(Float, nullable=False, comment="Private vehicle price OR individual seat ticket price value")
     capacity = Column(Integer, nullable=False, comment="Total passenger seating capacity limits")
 
-    # Upgraded lifecycle control availability state
+    rental_mode = Column(
+        Enum(TransportRentalModeEnum),
+        default=TransportRentalModeEnum.private_dedicated,
+        server_default=TransportRentalModeEnum.private_dedicated.value,
+        nullable=False,
+        comment="Specifies whether the booking is per vehicle or per seat"
+    )
+    available_seats = Column(
+        Integer,
+        nullable=False,
+        comment="Tracks active available seat counts for public shared routes"
+    )
+
     status = Column(
         Enum(TransportStatusEnum),
         default=TransportStatusEnum.active,
@@ -36,19 +52,21 @@ class Transports(Base):
         nullable=False
     )
 
-    # Life-Cycle Server Timestamps
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
 
-    # 🏛️ MASTER ACCOUNTABILITY AUDIT TRAILS
     creator_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     updated_by = Column(Integer, ForeignKey("users.id"), nullable=True)
 
-    # String-based relationship hook to bypass Python's circular loading loop traps
     creator = relationship("Users", foreign_keys="[Transports.creator_id]")
 
-    # 🪝 MASTER LOCATIONS COUPLING LINKAGE (Links to the primary destination hub node if needed)
     location_id = Column(Integer, ForeignKey("locations.id"), nullable=False)
     location = relationship("Locations", back_populates="transports")
 
     bookings = relationship("TransportBookings", back_populates="transport", cascade="all, delete-orphan")
+
+    # =====================================================================
+    # 🪝 THE CHOSEN RELATIONSHIP INTEGRATION LINK HOOK:
+    # =====================================================================
+    # This connects the model directly to your core reviews module table rows natively!
+    reviews = relationship("Reviews", back_populates="transport", cascade="all, delete-orphan")

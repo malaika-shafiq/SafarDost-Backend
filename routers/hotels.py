@@ -1,13 +1,14 @@
 import math
 from typing import Annotated, Optional
 from fastapi import APIRouter, Depends, HTTPException, status, Query
-from sqlalchemy import or_, desc, asc
+from sqlalchemy import or_, desc, asc, func
 from sqlalchemy.orm import Session, joinedload
 from database import get_db
 
 # Model and Schema Cross-Imports
 from models.hotel import Hotels, HotelRooms, HotelStatusEnum
 from models.image import Images, ImageResourceTypeEnum
+from models.review import Reviews, ReviewStatusEnum  # 👈 Activated your core Review models here!
 from schemas.hotel_schemas import (
     HotelCreate,
     HotelUpdate,
@@ -42,7 +43,7 @@ def get_all_hotels_paginated(
     PUBLIC ACCESSIBLE: Advanced discovery endpoint for mobile travelers.
     Employs 'joinedload' to pre-fetch taxonomy details and filter active items seamlessly.
     """
-    # 🏎️ FIXED N+1 QUERY BOTTLENECK: Eager-load relationships and filter for active records
+    # FIXED N+1 QUERY BOTTLENECK: Eager-load relationships and filter for active records
     query = db.query(Hotels).options(
         joinedload(Hotels.category),
         joinedload(Hotels.location)
@@ -123,16 +124,19 @@ def get_all_hotels_paginated(
 
 
 # ==========================================
-# 2. READ A SINGLE HOTEL PROFILE DETAILS
+# 2. READ A SINGLE HOTEL PROFILE DETAILS (With Live Review Aggregations)
 # ==========================================
 @router.get("/{hotel_id}", response_model=HotelDetailResponse, status_code=status.HTTP_200_OK)
 def get_hotel_by_id(hotel_id: int, db: db_dependency):
     """
-    PUBLIC ACCESSIBLE: Fetch deep profile parameters, nested room stock types, and photos array list.
+    PUBLIC ACCESSIBLE: Fetch deep profile parameters, nested room stock types, and traveler feedback arrays.
+    Dynamically pre-fetches and aggregates review star telemetry using eager relational loading rules.
     """
+    # 🏎️ EAGER LOADS REVIEWS: Uses joinedload parameters to pull review and reviewer user references in 1 operation
     hotel = db.query(Hotels).options(
         joinedload(Hotels.category),
-        joinedload(Hotels.location)
+        joinedload(Hotels.location),
+        joinedload(Hotels.reviews).joinedload(Reviews.user)
     ).filter(Hotels.id == hotel_id).first()
 
     if not hotel:
@@ -147,23 +151,32 @@ def get_hotel_by_id(hotel_id: int, db: db_dependency):
     # Fetch corresponding child inventory rooms types linked to this establishment
     rooms = db.query(HotelRooms).filter(HotelRooms.hotel_id == hotel_id).all()
 
+    # 🧠 ON-THE-FLY AGGREGATION ALGORITHM: Rounds scores cleanly without storage schema redundancy costs
+    avg_score = db.query(func.avg(Reviews.rating)).filter(
+        Reviews.hotel_id == hotel_id,
+        Reviews.status == ReviewStatusEnum.active
+    ).scalar()
+
+    final_rating = round(avg_score, 1) if avg_score else 0.0
+
+    compiled_reviews = []
+    for r in hotel.reviews:
+        if r.status == ReviewStatusEnum.active:
+            compiled_reviews.append({
+                "id": r.id,
+                "rating": r.rating,
+                "comment": r.comment,
+                "reviewer_name": r.user.name if r.user else "Anonymous Traveler",
+                "created_at": r.created_at
+            })
+
     return {
-        "hotel": {
-            "id": hotel.id,
-            "name": hotel.name,
-            "description": hotel.description,
-            "contact_information": hotel.contact_information,
-            "facilities": hotel.facilities,
-            "status": hotel.status,
-            "location_id": hotel.location_id,
-            "category_id": hotel.category_id,
-            "creator_id": hotel.creator_id,
-            "updated_by": hotel.updated_by,
-            "created_at": hotel.created_at,
-            "updated_at": hotel.updated_at
-        },
+        "hotel": hotel,
         "images": [img.image_url for img in photos],
-        "rooms": rooms
+        "rooms": rooms,
+        "reviews": compiled_reviews,  # 🚀 Delivered natively to client mobile layouts
+        "average_rating": final_rating,  # 🚀 Populates dynamic stars on the screen components
+        "total_reviews_count": len(compiled_reviews)
     }
 
 # ==========================================
@@ -199,8 +212,10 @@ def create_new_hotel(
         facilities=hotel_request.facilities,
         location_id=hotel_request.location_id,
         category_id=hotel_request.category_id,
-        creator_id=current_admin.get("id")  # 🏛️ Full audit signature mapping
+        creator_id=current_admin.get("id")
     )
+
+    db_hotel.rooms = []  # Explicitly initialize as an empty relationship list block
 
     db.add(db_hotel)
     db.commit()
@@ -214,7 +229,7 @@ def create_new_hotel(
             description=room.description,
             price_per_night=room.price_per_night,
             capacity=room.capacity,
-            quantity=room.quantity  # Saves total capacity count directly
+            quantity=room.quantity
         )
         db.add(db_room)
 
@@ -256,7 +271,6 @@ def update_hotel(
     for key, value in update_data.items():
         setattr(hotel, key, value)
 
-    # 🏛️ AUDIT TRAIL LOGGING
     hotel.updated_by = current_admin.get("id")
 
     # Handle structural photo replacements if image arrays are explicitly passed
@@ -281,7 +295,7 @@ def update_hotel(
 
 
 # ==========================================
-# 5. [NEW] MODIFY ROOM QUANTITY (🔒 Option 1: Admin Only)
+# 5. MODIFY ROOM QUANTITY (🔒 Admin Only)
 # ==========================================
 @router.put("/rooms/{room_id}/quantity", response_model=RoomResponse, status_code=status.HTTP_200_OK)
 def update_room_quantity(
@@ -297,10 +311,8 @@ def update_room_quantity(
     if not room:
         raise HTTPException(status_code=404, detail="Target room inventory record not found.")
 
-    # Update operational quantity stock level metrics
     room.quantity = quantity_payload.quantity
 
-    # Log operational administrative update metadata trails on parent structure
     parent_hotel = db.query(Hotels).filter(Hotels.id == room.hotel_id).first()
     if parent_hotel:
         parent_hotel.updated_by = current_admin.get("id")
@@ -370,7 +382,7 @@ def permanently_purge_hotel(
         Images.resource_id == hotel_id
     ).delete()
 
-    # 2. Hard-delete core item (Cascades down to drop child hotel_rooms rows)
+    # 2. Hard-delete core item (Cascades down to drop child hotel_rooms rows and nested reviews cleanly)
     db.delete(hotel)
     db.commit()
 

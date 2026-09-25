@@ -5,7 +5,6 @@ from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 
 
-# Explicit enum for the admin review moderation lifecycle states
 class ReviewStatusEnum(str, enum.Enum):
     active = "active"
     inactive = "inactive"
@@ -16,10 +15,8 @@ class Reviews(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     rating = Column(Integer, nullable=False, comment="Star rating grading metrics from 1 to 5")
-    comment = Column(Text, nullable=False,
-                     comment="Travel text review commentary content or shared experience description")
+    comment = Column(Text, nullable=False, comment="Travel text review commentary content or shared experience description")
 
-    # 🏛️ ADMIN MODERATION CONTROL: Review goes live instantly. Admin can change to 'inactive' to hide it.
     status = Column(
         Enum(ReviewStatusEnum),
         default=ReviewStatusEnum.active,
@@ -27,21 +24,20 @@ class Reviews(Base):
         nullable=False
     )
 
-    # System automatic metadata timestamps
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
 
-    # 👤 THE TRAVELER WHO SHARED THE EXPERIENCE
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     user = relationship("Users", foreign_keys=[user_id], back_populates="reviews")
 
-    # 🔗 UNIVERSAL POLYMORPHIC LINKS
-    # A single review can target either a place, a hotel, or a restaurant profile node.
+    # 🔗 POLYMORPHIC REGISTRY EXPANDED FOR VEHICLE FLEETS:
     place_id = Column(Integer, ForeignKey("places.id", ondelete="CASCADE"), nullable=True)
     hotel_id = Column(Integer, ForeignKey("hotels.id", ondelete="CASCADE"), nullable=True)
     restaurant_id = Column(Integer, ForeignKey("restaurants.id", ondelete="CASCADE"), nullable=True)
+    transport_id = Column(Integer, ForeignKey("transports.id", ondelete="CASCADE"), nullable=True)  # 👈 NEW COLUMN BINDING
 
     # Back-reference relationship mappings to target entities
     place = relationship("Places", back_populates="reviews")
     hotel = relationship("Hotels", back_populates="reviews")
     restaurant = relationship("Restaurants", back_populates="reviews")
+    transport = relationship("Transports", back_populates="reviews")  # 👈 NEW RELATIONSHIP TRACKER

@@ -1,13 +1,14 @@
 import math
 from typing import Annotated, Optional
 from fastapi import APIRouter, Depends, HTTPException, status, Query
-from sqlalchemy import or_, desc, asc
+from sqlalchemy import or_, desc, asc, func
 from sqlalchemy.orm import Session, joinedload
 from database import get_db
 
 # Model and Schema Cross-Imports
-from models.place import Places, PlaceStatusEnum  # 👈 IMPORTED ENUM HERE
+from models.place import Places, PlaceStatusEnum
 from models.image import Images, ImageResourceTypeEnum
+from models.review import Reviews, ReviewStatusEnum  # 👈 Activated your core Review models here!
 from schemas.place_schemas import PlaceCreate, PlaceUpdate, PlaceResponse, PlaceDetailResponse
 from utils.auth_utils import get_current_admin  # 🔒 Security Gate Dependency
 
@@ -35,14 +36,12 @@ def get_all_places_paginated(
     PUBLIC ACCESSIBLE: Advanced discovery endpoint for mobile travelers.
     Optimized with eager loading to eliminate database N+1 bottleneck queries.
     """
-    # 🏎️ FIXED N+1 PROBLEM: Pre-fetch full object relationships using joinedload
-    # 🏎️ ENUM ALIGNMENT: Filters exclusively for active database states
     query = db.query(Places).options(
         joinedload(Places.category),
         joinedload(Places.location)
     ).filter(Places.status == PlaceStatusEnum.active)
 
-    # 1. Apply Search Filter Bounds
+    # Apply Search Filter Bounds
     if search:
         query = query.filter(
             or_(
@@ -51,28 +50,28 @@ def get_all_places_paginated(
             )
         )
 
-    # 2. Apply Foreign Key Lookups
+    # Apply Foreign Key Lookups
     if location_id:
         query = query.filter(Places.location_id == location_id)
     if category_id:
         query = query.filter(Places.category_id == category_id)
 
-    # 3. Handle Dynamic Sorting Logic
+    # Handle Dynamic Sorting Logic
     sort_column = getattr(Places, sort_by, Places.id)
     if order.lower() == "desc":
         query = query.order_by(desc(sort_column))
     else:
         query = query.order_by(asc(sort_column))
 
-    # 4. Extract Total Counts Before Offsets
+    # Extract Total Counts Before Offsets
     total_items = query.count()
 
-    # 5. Process DB Page Range Slices
+    # Process DB Page Range Slices
     offset = (page - 1) * limit
     places_list = query.offset(offset).limit(limit).all()
     total_pages = math.ceil(total_items / limit) if total_items > 0 else 0
 
-    # 6. Optimized Batch Image Loading mapping loop to completely stop separate inline hits
+    # Optimized Batch Image Loading mapping loop to completely stop separate inline hits
     place_ids = [p.id for p in places_list]
     images_map = {}
     if place_ids:
@@ -85,7 +84,7 @@ def get_all_places_paginated(
                 images_map[img.resource_id] = []
             images_map[img.resource_id].append(img.image_url)
 
-    # 7. Package structured response array matching mobile screen expectations
+    # Package structured response array matching mobile screen expectations
     items_response = []
     for place in places_list:
         items_response.append({
@@ -105,7 +104,6 @@ def get_all_places_paginated(
             "updated_by": place.updated_by,
             "created_at": place.created_at,
             "updated_at": place.updated_at,
-            # 🏛️ RELATIONAL OBJ EMBEDDING: Passes direct text values straight to client UI layouts
             "location_name": place.location.name if place.location else None,
             "category_name": place.category.name if place.category else None,
             "images": images_map.get(place.id, [])
@@ -121,16 +119,19 @@ def get_all_places_paginated(
 
 
 # ==========================================
-# 2. READ A SINGLE PLACE PROFILE DETAILS
+# 2. READ A SINGLE PLACE PROFILE DETAILS (With Live Review Aggregations)
 # ==========================================
 @router.get("/{place_id}", response_model=PlaceDetailResponse, status_code=status.HTTP_200_OK)
 def get_place_by_id(place_id: int, db: db_dependency):
     """
-    PUBLIC ACCESSIBLE: Fetch deep metadata details and full photo asset arrays for a single attraction target.
+    PUBLIC ACCESSIBLE: Fetch deep profile parameters, landmark images, and traveler feedback arrays.
+    Dynamically pre-fetches and aggregates review star telemetry using eager relational loading rules.
     """
+    # 🏎️ EAGER LOADS REVIEWS: Uses joinedload parameters to pull review and reviewer user references in 1 operation
     place = db.query(Places).options(
         joinedload(Places.category),
-        joinedload(Places.location)
+        joinedload(Places.location),
+        joinedload(Places.reviews).joinedload(Reviews.user)
     ).filter(Places.id == place_id).first()
 
     if not place:
@@ -141,7 +142,25 @@ def get_place_by_id(place_id: int, db: db_dependency):
         Images.resource_id == place_id
     ).all()
 
-    # 🏛️ FIXED PAYLOAD: Packages fields safely inside 'place' to match your validation schema model
+    # 🧠 ON-THE-FLY AGGREGATION ALGORITHM: Rounds scores cleanly without storage schema redundancy costs
+    avg_score = db.query(func.avg(Reviews.rating)).filter(
+        Reviews.place_id == place_id,
+        Reviews.status == ReviewStatusEnum.active
+    ).scalar()
+
+    final_rating = round(avg_score, 1) if avg_score else 0.0
+
+    compiled_reviews = []
+    for r in place.reviews:
+        if r.status == ReviewStatusEnum.active:
+            compiled_reviews.append({
+                "id": r.id,
+                "rating": r.rating,
+                "comment": r.comment,
+                "reviewer_name": r.user.name if r.user else "Anonymous Traveler",
+                "created_at": r.created_at
+            })
+
     return {
         "place": {
             "id": place.id,
@@ -161,10 +180,11 @@ def get_place_by_id(place_id: int, db: db_dependency):
             "created_at": place.created_at,
             "updated_at": place.updated_at
         },
-        "images": [img.image_url for img in photos]
+        "images": [img.image_url for img in photos],
+        "reviews": compiled_reviews,  # 🚀 Delivered natively to client mobile layouts
+        "average_rating": final_rating,  # 🚀 Populates dynamic stars on the screen components
+        "total_reviews_count": len(compiled_reviews)
     }
-
-
 
 # ==========================================
 # 3. CREATE A TOURIST PLACE (🔒 Admin Account Gate Only)
@@ -239,7 +259,7 @@ def update_tourist_place(
     if not place:
         raise HTTPException(status_code=404, detail="Tourist attraction profile not found.")
 
-    # 🏎️ PERFORMANCE REFACTOR: Uses partial dictionary un-setting mechanics safely
+    # Uses partial dictionary un-setting mechanics safely
     update_data = place_request.model_dump(exclude_unset=True, exclude={"images"})
     for key, value in update_data.items():
         setattr(place, key, value)
@@ -285,7 +305,7 @@ def soft_delete_tourist_place(
     """
     place = db.query(Places).filter(Places.id == place_id).first()
 
-    # 🏎️ ENUM LOCKDOWN: Performs safe string comparisons against modern system standards
+    # Performs safe string comparisons against modern system standards
     if not place or place.status == PlaceStatusEnum.inactive:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,

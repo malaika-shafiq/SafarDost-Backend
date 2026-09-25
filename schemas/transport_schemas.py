@@ -1,13 +1,13 @@
 from pydantic import BaseModel, ConfigDict, Field
 from datetime import datetime
 from typing import Optional, List
-from models.transport import TransportStatusEnum  # 👈 Import your explicit lifecycle enum here
+from models.transport import TransportStatusEnum, TransportRentalModeEnum  # 👈 Imported new Enums here
 
 
 class TransportCreate(BaseModel):
     """
     Validates incoming JSON payloads sent from the admin transport panel dashboard.
-    Captures multi-image vehicle string URLs and transit specifications.
+    Captures multi-image vehicle string URLs, rental modes, and transit specifications.
     """
     transport_type: str = Field(..., min_length=2, max_length=150, description="e.g., Grand Cabin, 4x4 Jeep Prado")
     from_location: str = Field(..., min_length=2, max_length=100, description="Starting departure point / city")
@@ -15,8 +15,14 @@ class TransportCreate(BaseModel):
     departure_time: str = Field(...,
                                 description="Scheduled departure description details, e.g., 'Every Friday 06:00 AM'")
     arrival_time: str = Field(..., description="Estimated arrival details, e.g., '12 Hours approximate transit time'")
-    price: float = Field(..., gt=0, description="Fare cost price value per single seat seat head")
+    price: float = Field(..., gt=0, description="Private vehicle flat fare OR individual seat ticket price value")
     capacity: int = Field(..., ge=1, description="Total passenger seating capacity constraints")
+
+    # 📊 UPGRADED FLEET OPERATIONS CONFIGURATOR:
+    rental_mode: TransportRentalModeEnum = Field(
+        default=TransportRentalModeEnum.private_dedicated,
+        description="Defines whether the vehicle is rented entirely or per individual seat ticket"
+    )
 
     # 🖼️ MULTI-IMAGE HANDLER ARRAY (Follows your exact unified polymorphic pattern)
     images: List[str] = Field(..., min_length=1, description="Array containing hosted vehicle image URL strings")
@@ -34,6 +40,7 @@ class TransportUpdate(BaseModel):
     arrival_time: Optional[str] = None
     price: Optional[float] = None
     capacity: Optional[int] = None
+    rental_mode: Optional[TransportRentalModeEnum] = None
     images: Optional[List[str]] = None
     location_id: Optional[int] = None
 
@@ -48,6 +55,10 @@ class TransportResponse(BaseModel):
     arrival_time: str
     price: float
     capacity: int
+
+    # 📊 DISPATCHED RE-CALCULATION METRICS FOR MOBILE SCREENS:
+    rental_mode: TransportRentalModeEnum
+    available_seats: int
 
     status: TransportStatusEnum  # 👈 Enforces explicit database Enum state checks
     location_id: int

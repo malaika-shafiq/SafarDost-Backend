@@ -1,13 +1,14 @@
 import math
 from typing import Annotated, Optional
 from fastapi import APIRouter, Depends, HTTPException, status, Query
-from sqlalchemy import or_, desc, asc
+from sqlalchemy import or_, desc, asc, func
 from sqlalchemy.orm import Session, joinedload
 from database import get_db
 
 # Model and Schema Cross-Imports
 from models.restaurant import Restaurants, RestaurantStatusEnum
 from models.image import Images, ImageResourceTypeEnum
+from models.review import Reviews, ReviewStatusEnum  # 👈 Activated your core Review models here!
 from schemas.restaurant_schemas import RestaurantCreate, RestaurantUpdate, RestaurantResponse, RestaurantDetailResponse
 from utils.auth_utils import get_current_admin  # 🔒 Security Gate Dependency
 
@@ -105,7 +106,6 @@ def get_all_restaurants_paginated(
             "updated_by": restaurant.updated_by,
             "created_at": restaurant.created_at,
             "updated_at": restaurant.updated_at,
-            # 🏛️ RELATIONAL INCLUSIONS: Allows the app to render titles natively without extra lookups
             "location_name": restaurant.location.name if restaurant.location else None,
             "category_name": restaurant.category.name if restaurant.category else None,
             "images": images_map.get(restaurant.id, [])
@@ -121,46 +121,55 @@ def get_all_restaurants_paginated(
 
 
 # ==========================================
-# 2. READ A SINGLE RESTAURANT PROFILE DETAILS
+# 2. READ A SINGLE RESTAURANT PROFILE DETAILS (With Live Review Aggregations)
 # ==========================================
 @router.get("/{restaurant_id}", response_model=RestaurantDetailResponse, status_code=status.HTTP_200_OK)
 def get_restaurant_by_id(restaurant_id: int, db: db_dependency):
     """
-    PUBLIC ACCESSIBLE: Fetch deep profile parameters and photo strings array list for a target establishment.
+    PUBLIC ACCESSIBLE: Fetch deep profile parameters, restaurant images, and traveler feedback arrays.
+    Dynamically pre-fetches and aggregates review star telemetry using eager relational loading rules.
     """
+    # 🏎️ EAGER LOADS REVIEWS: Uses joinedload parameters to pull review and reviewer user references in 1 operation [INDEX: 1.1.2]
     restaurant = db.query(Restaurants).options(
         joinedload(Restaurants.category),
-        joinedload(Restaurants.location)
+        joinedload(Restaurants.location),
+        joinedload(Restaurants.reviews).joinedload(Reviews.user)
     ).filter(Restaurants.id == restaurant_id).first()
 
     if not restaurant:
         raise HTTPException(status_code=404, detail="Target restaurant profile record not found.")
 
+    # Fetch corresponding photos from our polymorphic central table collection
     photos = db.query(Images).filter(
         Images.resource_type == ImageResourceTypeEnum.restaurant,
         Images.resource_id == restaurant_id
     ).all()
 
+    # 🧠 ON-THE-FLY AGGREGATION ALGORITHM: Rounds scores cleanly without storage schema redundancy costs [INDEX: 1.1.2]
+    avg_score = db.query(func.avg(Reviews.rating)).filter(
+        Reviews.restaurant_id == restaurant_id,
+        Reviews.status == ReviewStatusEnum.active
+    ).scalar()
+
+    final_rating = round(avg_score, 1) if avg_score else 0.0
+
+    compiled_reviews = []
+    for r in restaurant.reviews:
+        if r.status == ReviewStatusEnum.active:
+            compiled_reviews.append({
+                "id": r.id,
+                "rating": r.rating,
+                "comment": r.comment,
+                "reviewer_name": r.user.name if r.user else "Anonymous Traveler",
+                "created_at": r.created_at
+            })
+
     return {
-        "restaurant": {
-            "id": restaurant.id,
-            "name": restaurant.name,
-            "description": restaurant.description,
-            "cuisine": restaurant.cuisine,
-            "menu_details": restaurant.menu_details,
-            "price_range": restaurant.price_range,
-            "contact": restaurant.contact,
-            "opening_information": restaurant.opening_information,
-            "table_capacity": restaurant.table_capacity,
-            "status": restaurant.status,
-            "location_id": restaurant.location_id,
-            "category_id": restaurant.category_id,
-            "creator_id": restaurant.creator_id,
-            "updated_by": restaurant.updated_by,
-            "created_at": restaurant.created_at,
-            "updated_at": restaurant.updated_at
-        },
-        "images": [img.image_url for img in photos]
+        "restaurant": restaurant,
+        "images": [img.image_url for img in photos],
+        "reviews": compiled_reviews,  # 🚀 Delivered natively to client mobile layouts
+        "average_rating": final_rating,  # 🚀 Populates dynamic stars on the screen components
+        "total_reviews_count": len(compiled_reviews)
     }
 
 
@@ -219,6 +228,7 @@ def create_new_restaurant(
 
     db.commit()
     return db_restaurant
+
 
 # ==========================================
 # 4. UPDATE AN EXISTING RESTAURANT (🔒 Admin Account Gate Only)
