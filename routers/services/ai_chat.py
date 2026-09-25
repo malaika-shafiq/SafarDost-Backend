@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from database import get_db
 
-# 🚀 INJECTS YOUR EXACT CODES OFFICIAL GOOGLE GENAI LIBRARIES
+# Official Google GenAI client constructors
 from google import genai
 from google.genai import types
 
@@ -69,31 +69,41 @@ def query_travel_database(db: Session, target_module: str, query_filter: str = "
 
 
 # =====================================================================
-# 6. SYSTEM PROMPT DESIGN & DOMAIN CONSTRAINTS (Strict Guardrails)
+# 6. REFINED SYSTEM PROMPT DESIGN & INTENT ROUTING CONSTRAINTS
 # =====================================================================
 SYSTEM_AI_PROMPT = """
 You are the master AI Travel Assistant for 'Safar Dost', an advanced tourism application for Northern Pakistan.
-Your job is to act as a polite conversational travel companion and structure factually grounded trip itineraries.
+Your job is to act as a friendly conversational travel companion and structure factually grounded trip itineraries.
 
 ⚠️ STRICT DOMAIN FILTER GUARDRAIL RULE:
 You are EXCLUSIVELY a travel and tourism assistant. You are forbidden from answering any random questions that do not 
 relate directly to traveling, vacations, hotels, restaurants, destinations, places, transport fleet arrangements, or route schedules. 
-If the user asks about coding, math, general science, politics, historical events unrelated to tourism, or any other random topic, 
-you must politely decline to answer. For example, respond with: 'I can only assist you with travel-related queries for Safar Dost. Let's plan your next adventure!'
+If the user asks about coding, math, general science, politics, or any other random topic, you must politely decline to answer.
 
-INVENTORY CONTROLS:
-1. You must ONLY recommend items that exist inside the local database using your available data context rows.
-2. If the user is just saying hello or asking casual travel questions, chat warmly and keep 'show_plan_button' as false.
-3. If the user explicitly asks for a trip plan or itinerary generation, you MUST structure a plan using real database rows. 
-   You must flip 'show_plan_button' to true, and populate 'meta_plan_data' with a clean JSON payload mapping the destination, 
-   duration days count, and a highly detailed day-by-day itinerary breakdowns description string text that the frontend can save to the user's dashboard records.
+🔄 DUAL-INTENT CONVERSATIONAL INTERVIEW INTERFACE RULES:
+You must dynamically route your responses based on the user's immediate intent:
 
-Always speak confidently and helpfully about Pakistan's northern tourist tracks.
+INTENT A: CASUAL TRAVEL CHAT & GREETINGS (e.g., 'hi', 'hello', 'tell me about Hunza', 'what should I pack for Skardu?')
+1. If the user is simply greeting you, saying hello, or asking general, non-itinerary travel questions about Pakistan's northern spots, respond warmly, naturally, and helpfully.
+2. DO NOT push or force the budget/itinerary interview questions immediately if they are just saying hello. 
+3. Always keep 'show_plan_button' as false and 'meta_plan_data' as null during casual travel chats.
+
+INTENT B: EXPLICIT TRIP PLANNING (e.g., 'plan a trip for me', 'generate an itinerary', 'create a travel plan')
+1. If and only if the user explicitly asks you to build an itinerary, trip plan, or schedule a tour vacation, you must execute the multi-step interview.
+2. You require exactly THREE data parameters to formulate an itinerary:
+   - Target Destination (e.g., Hunza, Skardu, Swat, Gilgit)
+   - Trip Duration / Number of Days (an integer)
+   - Total Travel Budget (in PKR)
+3. If any of these three parameters are missing from the conversation context, keep 'show_plan_button' as false, keep 'meta_plan_data' as null, and use the 'bot_response' to politely ask the traveler to provide the missing planning metrics.
+
+INVENTORY CONTROLS & FINALIZATION SCHEMA:
+1. Once all three fields (Destination, Duration, and Budget) have been collected, you are permitted to build the plan.
+2. You must ONLY recommend items that exist inside the local database context rows provided to you (Hotels, Transport, Packages, Places).
+3. Upon building the final plan, you MUST set 'show_plan_button' to true, and populate the 'meta_plan_data' object tree matching the exact JSON structural contract keys.
 """
 
-
 # =====================================================================
-# 7. THE CORE CHAT EXECUTION ENDPOINT (🔒 Authenticated Users)
+# 7. THE CORE CHAT EXECUTION ENDPOINT (🔒 Authenticated Travelers)
 # =====================================================================
 @router.post("/chat", response_model=ChatResponse, status_code=status.HTTP_200_OK)
 def converse_with_trip_planner_assistant(
@@ -109,9 +119,9 @@ def converse_with_trip_planner_assistant(
         user_input = chat_request.message.strip()
         user_display_name = current_user.get("first_name", "Traveler")
 
-        # 1. ORCHESTRATE INTENT LOOKUPS
+        # 1. ORCHESTRATE INTENT LOOKUPS (RAG Context Injection)
         database_context = ""
-        planning_keywords = ["plan", "trip", "itinerary", "hotel", "restaurant", "transport", "package", "tour"]
+        planning_keywords = ["plan", "trip", "itinerary", "hotel", "restaurant", "transport", "package", "tour", "budget", "days", "pkr", "hunza", "skardu", "swat", "gilgit"]
 
         if any(keyword in user_input.lower() for keyword in planning_keywords):
             database_context += query_travel_database(db, "places")
@@ -129,49 +139,41 @@ def converse_with_trip_planner_assistant(
 
         Provide your final response as a clean, valid JSON object matching these exact keys:
         {{
-           "bot_response": "your conversational text or domain rejection here",
+           "bot_response": "your conversational text, intermediate interview questions, or domain rejection here",
            "show_plan_button": true or false,
            "meta_plan_data": null or {{ 
+                "trip_title": "string (An energetic title for the trip generated by the AI)",
                 "destination": "string", 
-                "days": int, 
-                "estimated_cost": float,
-                "itinerary_details": "Highly detailed day-by-day text itinerary text to write to disk ledger"
+                "itinerary_details": "Highly detailed day-by-day text itinerary text compiled from database available rows",
+                "scope": "history"
            }}
         }}
         Ensure you only return the raw JSON object string with no markdown formatting. Do not wrap the JSON output in backticks.
         """
 
-        # ✅ MATCHES YOUR CODE LINE 8 EXACTLY: Initializes using your direct functional profile
-        # Passing your explicit dashboard token here guarantees it mounts successfully on Railway!
         cloud_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_GEMINI_KEY")
         client = genai.Client(api_key=str(cloud_key).strip())
 
-        # 🏎️ INDUSTRY-STANDARD HIGH-AVAILABILITY EXPONENTIAL BACKOFF RETRY ENGINE:
+        # 🏎️ HIGH-AVAILABILITY EXPONENTIAL BACKOFF RETRY ENGINE
         max_retries = 3
-        sleep_delay = 1.0  # Initial sleep delay buffer in seconds
+        sleep_delay = 1.0
         response = None
 
         for attempt in range(max_retries):
             try:
-                # 🚀 EXECUTES YOUR AUTHENTIC LIVE MODEL GENERATION:
                 response = client.models.generate_content(
-                    model='gemini-3.6-flash',  # Your verified running model string parameter
+                    model='gemini-3.6-flash',
                     contents=composite_prompt,
                     config=types.GenerateContentConfig(
                         response_mime_type="application/json"
                     ),
                 )
-                # If the call succeeds, break out of the retry loop completely!
                 break
-
             except Exception as api_error:
-                # If we hit Google's 503 high demand or network spikes, pause and try again!
                 if attempt < max_retries - 1:
                     time.sleep(sleep_delay)
-                    sleep_delay *= 2  # Double the backoff duration for the next attempt (1s -> 2s)
+                    sleep_delay *= 2
                     continue
-
-                # If all 3 live execution attempts fail completely, raise the clean HTTP exception trace
                 raise HTTPException(
                     status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                     detail=f"Gemini SDK Core Execution Failure after retries: {str(api_error)}"
@@ -190,16 +192,13 @@ def converse_with_trip_planner_assistant(
             )
         except Exception:
             return ChatResponse(
-                bot_response=response.text.strip(),
+                bot_response=response.text.strip() if response else "System integration delay. Please re-prompt.",
                 show_plan_button=False,
                 meta_plan_data=None
             )
 
     except HTTPException as http_err:
-        # Let our custom 503 error pass straight through to the Swagger dashboard!
         raise http_err
-
-
     except Exception as error:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
