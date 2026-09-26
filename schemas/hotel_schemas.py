@@ -46,6 +46,7 @@ class HotelCreate(BaseModel):
     description: str = Field(..., min_length=10, description="Deep property summary overview text context")
     contact_information: str = Field(..., min_length=5, max_length=100, description="Phone lines or desk numbers")
     facilities: Optional[str] = Field(None, description="Comma-separated amenity list, e.g., WiFi, AC, Parking, Heater")
+    base_price: float = Field(..., gt=0, description="Baseline starting rate for this hotel")
 
     # Unified polymorphic media handler array
     images: List[str] = Field(..., min_length=1, description="Hosted landscape media file URL strings")
@@ -65,6 +66,7 @@ class HotelUpdate(BaseModel):
     description: Optional[str] = None
     contact_information: Optional[str] = None
     facilities: Optional[str] = None
+    base_price: Optional[float] = None
     images: Optional[List[str]] = None
     location_id: Optional[int] = None
     category_id: Optional[int] = None
@@ -77,6 +79,7 @@ class HotelResponse(BaseModel):
     description: str
     contact_information: str
     facilities: Optional[str]
+    base_price: float
     status: HotelStatusEnum
 
     location_id: int
