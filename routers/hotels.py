@@ -230,6 +230,7 @@ def create_new_hotel(
         description=hotel_request.description,
         contact_information=hotel_request.contact_information.strip(),
         facilities=hotel_request.facilities,
+        base_price=hotel_request.base_price,
         location_id=hotel_request.location_id,
         category_id=hotel_request.category_id,
         creator_id=current_admin.get("id")
