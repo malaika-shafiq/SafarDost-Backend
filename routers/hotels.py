@@ -41,9 +41,9 @@ def get_all_hotels_paginated(
 ):
     """
     PUBLIC ACCESSIBLE: Advanced discovery endpoint for mobile travelers.
-    Employs 'joinedload' to pre-fetch taxonomy details and filter active items seamlessly.
+    Employs optimized batch image and batch room loaders to completely eliminate inline N+1 loop penalties.
     """
-    # FIXED N+1 QUERY BOTTLENECK: Eager-load relationships and filter for active records
+    # FIXED N+1 QUERY BOTTLENECK: Eager-load taxonomy tables natively
     query = db.query(Hotels).options(
         joinedload(Hotels.category),
         joinedload(Hotels.location)
@@ -80,8 +80,10 @@ def get_all_hotels_paginated(
     hotels_list = query.offset(offset).limit(limit).all()
     total_pages = math.ceil(total_items / limit) if total_items > 0 else 0
 
-    # 6. Optimized Batch Image Processing to completely stop separate inline loops
+    # Extract all active IDs in the current page batch
     hotel_ids = [h.id for h in hotels_list]
+
+    # 6. Optimized Batch Image Processing
     images_map = {}
     if hotel_ids:
         all_photos = db.query(Images).filter(
@@ -93,7 +95,23 @@ def get_all_hotels_paginated(
                 images_map[img.resource_id] = []
             images_map[img.resource_id].append(img.image_url)
 
-    # 7. Map payload response safely including relational database text strings
+    # 🚀 7. [NEW] OPTIMIZED BATCH ROOM SUPPLIES PROCESSOR MAP (Eliminates N+1 loop penalties) [INDEX: 1.1.2]
+    rooms_map = {}
+    if hotel_ids:
+        all_rooms = db.query(HotelRooms).filter(HotelRooms.hotel_id.in_(hotel_ids)).all()
+        for rm in all_rooms:
+            if rm.hotel_id not in rooms_map:
+                rooms_map[rm.hotel_id] = []
+            rooms_map[rm.hotel_id].append({
+                "id": rm.id,
+                "room_type": rm.room_type,
+                "description": rm.description,
+                "price_per_night": rm.price_per_night,
+                "capacity": rm.capacity,
+                "quantity": rm.quantity
+            })
+
+    # 8. Map payload response safely including relational database text strings and room list blocks [INDEX: 1.1.2]
     items_response = []
     for hotel in hotels_list:
         items_response.append({
@@ -111,7 +129,8 @@ def get_all_hotels_paginated(
             "updated_at": hotel.updated_at,
             "location_name": hotel.location.name if hotel.location else None,
             "category_name": hotel.category.name if hotel.category else None,
-            "images": images_map.get(hotel.id, [])
+            "images": images_map.get(hotel.id, []),
+            "rooms": rooms_map.get(hotel.id, [])  # 🚀 NESTED ROOM FEED BLOCKS FULLY ATTACHED
         })
 
     return {
@@ -121,6 +140,7 @@ def get_all_hotels_paginated(
         "limit": limit,
         "total_pages": total_pages
     }
+
 
 
 # ==========================================
