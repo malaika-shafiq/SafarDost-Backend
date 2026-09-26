@@ -20,6 +20,7 @@ class Hotels(Base):
     contact_information = Column(String, nullable=False, comment="Phone numbers or booking contact desks")
     facilities = Column(Text, nullable=True,
                         comment="Comma-separated amenities summary tokens, e.g., WiFi, AC, Parking")
+    base_price = Column(Float, nullable=False, default=0.0, comment="Baseline starting night rate fare")
 
     status = Column(
         Enum(HotelStatusEnum),
