@@ -120,6 +120,7 @@ def get_all_hotels_paginated(
             "description": hotel.description,
             "contact_information": hotel.contact_information,
             "facilities": hotel.facilities,
+            "base_price": hotel.base_price,
             "status": hotel.status,
             "location_id": hotel.location_id,
             "category_id": hotel.category_id,
